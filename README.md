@@ -30,7 +30,9 @@ Welcome to our group project repository for the SC4001 / CZ4042 course. This rep
    cd your-repo-name
    ```
 
-2. **Create a virtual environment and activate it:**
+2. **Create and activate a virtual environment:**
+   
+   You will need to set up your own Python environment. Here is an example using `venv`:
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows use: venv\Scripts\activate
@@ -40,27 +42,4 @@ Welcome to our group project repository for the SC4001 / CZ4042 course. This rep
    ```bash
    pip install -r requirements.txt
    ```
-
-## Running Experiments
-
-- Execute training and evaluation scripts inside the `src/` directory.
-- Reproduce results by following instructions in the `experiments/` folder.
-
-## Contributing
-
-We welcome contributions from all team members. Please follow these steps:
-- Fork the repository and create a new branch.
-- Implement changes and test your code.
-- Submit a pull request for review.
-
-## License
-
-This project is licensed under the [MIT License](LICENSE).
-
-## Contact
-
-For inquiries, please contact:
-- **Your Name:** your.email@example.com
-- **Partner's Name:** partner.email@example.com
-
 
