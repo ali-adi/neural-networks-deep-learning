@@ -15,8 +15,6 @@ Welcome to our project repository for SC4001 / CZ4042. This repository contains 
 ```
 .
 ├── 1-EDA                  # Exploratory Data Analysis
-│   ├── notebooks          # Jupyter notebooks for data exploration
-│   ├── scripts            # Python scripts for data processing & visualization
 ├── 2-train                # Model training and evaluation
 │   ├── notebooks          # Jupyter notebooks for model training
 │   ├── runs               # Experiment results and logs
@@ -39,7 +37,7 @@ cd your-repo-name
 ### 2. Set up a virtual environment
 You will need to create your own virtual environment. Example using `venv`:
 ```bash
-python -m venv venv
+python -m venv env
 source venv/bin/activate  # On Windows use: venv\Scripts\activate
 ```
 
