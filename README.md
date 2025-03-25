@@ -30,14 +30,14 @@ Welcome to our project repository for SC4001 / CZ4042. This repository contains 
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/your-username/your-repo-name.git
-cd your-repo-name
+git clone https://github.com/your-username/neural-networks-deep-learning.git
+cd neural-networks-deep-learning
 ```
 
 ### 2. Set up a virtual environment
 You will need to create your own virtual environment. Example using `venv`:
 ```bash
-python -m venv env
+python3 -m venv env
 source venv/bin/activate  # On Windows use: venv\Scripts\activate
 ```
 
