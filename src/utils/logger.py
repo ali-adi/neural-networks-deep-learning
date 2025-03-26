@@ -1,3 +1,5 @@
+# logger.py
+
 """
 logger.py
 
@@ -19,5 +21,7 @@ def get_logger(name=__name__):
         )
         ch.setFormatter(formatter)
         logger.addHandler(ch)
+
+        print(f"📝 Logger initialized for: {name}")
 
     return logger

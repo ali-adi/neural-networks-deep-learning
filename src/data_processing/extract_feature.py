@@ -1,3 +1,5 @@
+# extract_feature.py
+
 """
 extract_feature.py
 
@@ -28,15 +30,6 @@ def get_feature(file_path: str,
     """
     Loads audio from file_path, pads/crops to fixed length,
     and extracts the chosen feature (MFCC by default).
-
-    Args:
-        file_path (str): Path to the audio file.
-        feature_type (str): Currently supports "MFCC".
-        mean_signal_length (int): Desired fixed length for the audio signal.
-        embed_len (int): Number of MFCC coefficients.
-
-    Returns:
-        np.ndarray: Feature matrix of shape (time_steps, embed_len).
     """
     signal, fs = librosa.load(file_path, sr=None)
     s_len = len(signal)
@@ -68,36 +61,37 @@ def generate_csv(csv_save: str,
     Iterates over emotion folders, extracts features from audio .wav files,
     and saves them as CSV files in labeled subdirectories under csv_save.
     """
+    print("📁 STEP 1: Creating output directories...")
     current_dir = os.getcwd()
     if not os.path.exists(csv_save):
-        print(f"{csv_save} created.")
+        print(f"📂 Creating folder: {csv_save}")
         os.makedirs(csv_save)
 
     for label_dir in class_labels:
         label_path = os.path.join(csv_save, label_dir)
         if not os.path.exists(label_path):
             os.makedirs(label_path)
-            print(f"{label_path} created.")
+            print(f"📂 Creating label subfolder: {label_path}")
 
     datapath, labels = [], []
     dataset_dir = os.path.join("data", "processed", data_name)
-    sys.stderr.write(f'Current Folder: {current_dir}\n')
-    sys.stderr.write(f'Looking in folder: {dataset_dir}\n')
+    print("\n🔍 STEP 2: Scanning for .wav files...\n")
+    print(f"📌 Current directory: {current_dir}")
+    print(f"📌 Looking in dataset folder: {dataset_dir}\n")
 
-    # Gather all .wav files and labels
     for i, directory in enumerate(class_labels):
+        print(f"▶️ Reading label '{directory}'...")
         emotion_dir = os.path.join(dataset_dir, directory)
-        sys.stderr.write(f"Start to Read {directory}\n")
         filelist = os.listdir(emotion_dir)
-        for f in tqdm(filelist):
+        for f in tqdm(filelist, desc=f"📦 {directory}"):
             if f.endswith('.wav'):
                 filepath = os.path.join(emotion_dir, f)
                 datapath.append(filepath)
                 labels.append(i)
-        sys.stderr.write(f"End to Read {directory}\n")
+        print(f"✅ Finished reading '{directory}'\n")
 
-    # Extract features and save CSV
-    for (video_path, label) in tqdm(zip(datapath, labels), total=len(datapath)):
+    print("🎧 STEP 3: Extracting features and saving CSV files...\n")
+    for (video_path, label) in tqdm(zip(datapath, labels), total=len(datapath), desc="🚀 Extracting"):
         filename = os.path.splitext(os.path.basename(video_path))[0]
         feature_vector = get_feature(file_path=video_path,
                                      feature_type=feature_type,
@@ -107,6 +101,8 @@ def generate_csv(csv_save: str,
         csv_filepath = os.path.join(csv_save, class_labels[label], csv_filename)
         np.savetxt(csv_filepath, feature_vector, delimiter=',')
 
+    print("\n✅ All features extracted and saved as CSV!\n")
+
 def process_csv(data_path: str,
                 mfcc_len: int=39,
                 class_labels: Tuple=("angry","boredom","disgust","fear","happy","neutral","sad"),
@@ -114,25 +110,27 @@ def process_csv(data_path: str,
     """
     Reads CSV files (previously generated) in data_path into NumPy arrays.
     """
+    print("🧾 STEP 4: Compiling CSVs into .npy arrays...\n")
     x, y = [], []
     current_dir = os.getcwd()
-    sys.stderr.write(f'Current Folder: {current_dir}\n')
+    print(f"📌 Current directory: {current_dir}")
     os.chdir(data_path)
 
     for i, directory in enumerate(class_labels):
-        sys.stderr.write(f"Start to Read {directory}\n")
+        print(f"🔄 Reading CSVs from: {directory}")
         os.chdir(directory)
         file_list = natsorted(os.listdir('.'), alg=ns.PATH)
-        for filename in tqdm(file_list):
+        for filename in tqdm(file_list, desc=f"📄 {directory}"):
             if filename.endswith('.csv') and not filename.endswith('time.csv'):
                 filepath = os.path.join(os.getcwd(), filename)
                 feature_vector = np.loadtxt(filepath, delimiter=",", dtype=np.float32)
                 x.append(feature_vector)
                 y.append(i)
-        sys.stderr.write(f"End to Read {directory}\n")
         os.chdir('..')
+        print(f"✅ Done with '{directory}'\n")
 
     os.chdir(current_dir)
+    print("✅ CSV compilation complete!\n")
     return np.array(x), np.array(y)
 
 def main():
@@ -149,10 +147,12 @@ def main():
                         help="Where to save CSV files of extracted features.")
     args = parser.parse_args()
 
-    # Example label set for EMODB
+    print("\n==============================")
+    print("🎙️  STARTING FEATURE EXTRACTION")
+    print("==============================\n")
+
     EMODB_LABELS = ("angry","boredom","disgust","fear","happy","neutral","sad")
 
-    # Generate CSV
     generate_csv(
         csv_save=args.output_dir,
         data_name=args.data_name,
@@ -162,12 +162,18 @@ def main():
         class_labels=EMODB_LABELS
     )
 
-    # Convert CSVs to .npy
     x, y = process_csv(args.output_dir, mfcc_len=args.embed_len, class_labels=EMODB_LABELS, flatten=False)
     y = to_categorical(y, num_classes=len(EMODB_LABELS))
     data_dict = {"x": x, "y": y}
-    np.save(f"{args.data_name}.npy", data_dict)
-    print(f"Feature arrays saved to {args.data_name}.npy")
+
+    # 1) Construct the output path under data/MFCC
+    output_npy_path = os.path.join("data", "MFCC", f"{args.data_name}.npy")
+
+    # 2) Save to the new location
+    np.save(output_npy_path, data_dict)
+
+    print(f"📦 Feature arrays saved to `{output_npy_path}`\n")
+    print("✅ FEATURE EXTRACTION COMPLETE!\n")
 
 if __name__ == "__main__":
     main()

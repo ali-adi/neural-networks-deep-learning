@@ -1,3 +1,5 @@
+# reorganize_data.py
+
 """
 reorganize_data.py
 
@@ -30,16 +32,24 @@ def reorganize_emodb(source_dir: str, dest_dir: str):
     """
     Copies EMODB .wav files from source_dir into labeled subfolders under dest_dir
     based on the sixth character in the filename.
-
-    Args:
-        source_dir (str): Path to the unorganized .wav files.
-        dest_dir (str): Destination directory where subfolders (by emotion) are created.
     """
-    # Create subdirectories for each emotion label
-    for label in set(EMOTION_MAP.values()):
-        os.makedirs(os.path.join(dest_dir, label), exist_ok=True)
+    print("\n==============================")
+    print("📂 REORGANIZING EMODB DATA")
+    print("==============================\n")
 
-    # Iterate over .wav files in the source directory
+    print(f"🔍 Source Directory: {source_dir}")
+    print(f"📁 Destination Directory: {dest_dir}\n")
+
+    print("📦 STEP 1: Creating label folders...")
+    for label in set(EMOTION_MAP.values()):
+        path = os.path.join(dest_dir, label)
+        os.makedirs(path, exist_ok=True)
+        print(f"✅ Created folder: {path}")
+
+    print("\n🔄 STEP 2: Sorting files into emotion folders...\n")
+    total_files = 0
+    unknown_labels = 0
+
     for filename in os.listdir(source_dir):
         if filename.endswith('.wav'):
             emotion_code = filename[5].upper()  # Sixth character
@@ -48,8 +58,15 @@ def reorganize_emodb(source_dir: str, dest_dir: str):
                 src_path = os.path.join(source_dir, filename)
                 dst_path = os.path.join(dest_dir, label, filename)
                 shutil.copy(src_path, dst_path)
+                total_files += 1
             else:
-                print(f"Unknown emotion code in file: {filename}")
+                print(f"⚠️ Unknown emotion code in file: {filename}")
+                unknown_labels += 1
+
+    print(f"\n✅ Done! {total_files} files reorganized successfully.")
+    if unknown_labels > 0:
+        print(f"⚠️ {unknown_labels} files had unknown emotion codes and were skipped.")
+    print("\n🎉 REORGANIZATION COMPLETE!\n")
 
 def main():
     parser = argparse.ArgumentParser(

@@ -1,18 +1,18 @@
+# model.py
+
 """
 model.py
 
 DESCRIPTION:
 Implements a temporal convolution-based approach for speech emotion recognition,
 including cross-validation, checkpointing, confusion matrices, and metrics.
-
 """
 
 import os
 # --- WARNING SUPPRESSION ---
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # Hide all TensorFlow warnings
 import warnings
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore")         # Hide Python-level warnings
 # ---------------------------
 
 import numpy as np
@@ -49,13 +49,9 @@ def temporal_block(
     kernel_size,
     dropout_rate=0.0
 ):
-    """
-    A single 'temporal block' using dilated causal convolutions,
-    batch normalization, dropout, and gating.
-    """
     original_x = x
 
-    # First convolution block
+    # 1st conv
     conv_1 = Conv1D(filters=nb_filters,
                     kernel_size=kernel_size,
                     dilation_rate=dilation,
@@ -64,7 +60,7 @@ def temporal_block(
     conv_1 = Activation(activation)(conv_1)
     conv_1 = SpatialDropout1D(dropout_rate)(conv_1)
 
-    # Second convolution block
+    # 2nd conv
     conv_2 = Conv1D(filters=nb_filters,
                     kernel_size=kernel_size,
                     dilation_rate=dilation,
@@ -73,24 +69,19 @@ def temporal_block(
     conv_2 = Activation(activation)(conv_2)
     conv_2 = SpatialDropout1D(dropout_rate)(conv_2)
 
-    # Adjust dimensions if needed
+    # Dim match
     if original_x.shape[-1] != conv_2.shape[-1]:
         original_x = Conv1D(filters=nb_filters,
                             kernel_size=1,
                             padding='same')(original_x)
 
-    # Gating with sigmoid
+    # Gating
     conv_2 = Lambda(sigmoid)(conv_2)
-    # Keras-friendly multiplication for symbolic Tensors
     gated_output = original_x * conv_2
 
     return gated_output
 
 class TemporalConvNet:
-    """
-    A temporal convolution-based class for capturing forward/backward context
-    with dilated causal convolutions, gating, skip connections, and global pooling.
-    """
     def __init__(
         self,
         nb_filters=64,
@@ -113,7 +104,7 @@ class TemporalConvNet:
         forward = inputs
         backward = Lambda(lambda x: tf.reverse(x, axis=[1]))(inputs)
 
-        # Initial conv to match dims
+        # Initial 1x1 conv
         forward_conv = Conv1D(filters=self.nb_filters, kernel_size=1,
                               dilation_rate=1, padding='causal')(forward)
         backward_conv = Conv1D(filters=self.nb_filters, kernel_size=1,
@@ -147,14 +138,11 @@ class TemporalConvNet:
                 merged_skip = Lambda(lambda x: tf.expand_dims(x, axis=1))(merged_skip)
                 final_skips.append(merged_skip)
 
+        # Combine all skip outputs
         output = Lambda(lambda tensors: tf.concat(tensors, axis=-2))(final_skips)
         return output
 
 class WeightLayer(tf.keras.layers.Layer):
-    """
-    Custom layer that applies a learnable weighting to a 3D tensor [batch, time, features]
-    to reduce it to [batch, features].
-    """
     def __init__(self, **kwargs):
         super(WeightLayer, self).__init__(**kwargs)
 
@@ -168,24 +156,16 @@ class WeightLayer(tf.keras.layers.Layer):
         super(WeightLayer, self).build(input_shape)
 
     def call(self, inputs):
-        # inputs shape: [batch, time, features]
-        transposed = tf.transpose(inputs, [0, 2, 1])  # [batch, features, time]
-        x = tf.matmul(transposed, self.kernel)        # [batch, features, 1]
-        return tf.squeeze(x, axis=-1)                # [batch, features]
+        transposed = tf.transpose(inputs, [0, 2, 1])
+        x = tf.matmul(transposed, self.kernel)
+        return tf.squeeze(x, axis=-1)
 
 def smooth_labels(labels, factor=0.1):
-    """
-    Smooths the one-hot labels by a small factor to help with regularization.
-    """
     labels *= (1 - factor)
     labels += (factor / labels.shape[1])
     return labels
 
 class SpeechEmotionModel:
-    """
-    Uses a temporal convolution-based approach for speech emotion recognition
-    with K-Fold cross-validation.
-    """
     def __init__(self, input_shape, class_labels, args):
         self.args = args
         self.data_shape = input_shape
@@ -197,9 +177,10 @@ class SpeechEmotionModel:
         self.acc = 0
         self.trained = False
 
-        print("SpeechEmotionModel input shape:", input_shape)
+        print(f"🧠 Initialized SpeechEmotionModel with input shape: {input_shape}")
 
     def create_model(self):
+        print("\n🛠️ Building model architecture...")
         inputs = Input(shape=(self.data_shape[0], self.data_shape[1]))
 
         conv_net = TemporalConvNet(
@@ -227,20 +208,23 @@ class SpeechEmotionModel:
             optimizer=optimizer,
             metrics=['accuracy']
         )
-        print("Model created successfully!")
+        print("✅ Model compiled successfully!\n")
 
     def train(self, x, y):
+        print("🎯 Starting training loop with cross-validation...\n")
         filepath = self.args.model_path
         resultpath = self.args.result_path
         os.makedirs(filepath, exist_ok=True)
         os.makedirs(resultpath, exist_ok=True)
 
+        from sklearn.model_selection import KFold
         kfold = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=self.args.random_seed)
         avg_accuracy, avg_loss = 0, 0
         i = 1
         now_time = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
         for train_idx, test_idx in kfold.split(x, y):
+            print(f"🔁 Fold {i} of {self.args.split_fold}")
             self.create_model()
             y_train_smooth = smooth_labels(copy.deepcopy(y[train_idx]), 0.1)
 
@@ -264,20 +248,19 @@ class SpeechEmotionModel:
                 callbacks=[checkpoint]
             )
 
-            # Evaluate
-            self.model.load_weights(weight_path)  # <-- no by_name or skip_mismatch
+            print("📊 Evaluating model...")
+            self.model.load_weights(weight_path)
             best_eva_list = self.model.evaluate(x[test_idx], y[test_idx], verbose=0)
             avg_loss += best_eva_list[0]
             avg_accuracy += best_eva_list[1]
 
-            print(f"{i}_Model evaluation: {best_eva_list}, "
-                  f"Now ACC: {round(avg_accuracy*100 / i, 2)}%")
+            print(f"✅ Fold {i} Accuracy: {round(best_eva_list[1] * 100, 2)}%")
 
             y_pred_best = self.model.predict(x[test_idx])
+            from sklearn.metrics import confusion_matrix, classification_report
             self.matrix.append(confusion_matrix(np.argmax(y[test_idx], axis=1),
                                                 np.argmax(y_pred_best, axis=1)))
 
-            # zero_division=0 to avoid “ill-defined” warnings
             em = classification_report(
                 np.argmax(y[test_idx], axis=1),
                 np.argmax(y_pred_best, axis=1),
@@ -295,7 +278,7 @@ class SpeechEmotionModel:
             ))
             i += 1
 
-        print("Average ACC:", avg_accuracy / self.args.split_fold)
+        print(f"\n📈 Average Accuracy: {round(avg_accuracy / self.args.split_fold * 100, 2)}%")
         self.acc = avg_accuracy / self.args.split_fold
 
         result_filename = f"{self.args.data}_{self.args.split_fold}fold_{round(self.acc*100, 2)}_{self.args.random_seed}_{now_time}.xlsx"
@@ -319,20 +302,22 @@ class SpeechEmotionModel:
         self.eva_matrix = []
         self.acc = 0
         self.trained = True
+        print("📝 Evaluation results saved!\n")
 
     def test(self, x, y, path):
+        print(f"\n🔎 Beginning model evaluation on test set...")
+        from sklearn.model_selection import KFold
         kfold = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=self.args.random_seed)
         avg_accuracy, avg_loss = 0, 0
         i = 1
         x_feats, y_labels = [], []
 
         for train_idx, test_idx in kfold.split(x, y):
+            print(f"📁 Testing Fold {i}")
             self.create_model()
 
-            # Construct the path for each fold's weights
             weight_path = os.path.join(path, f"{self.args.split_fold}-fold_weights_best_{i}.weights.h5")
 
-            # Fit for 0 epochs to initialize shapes
             self.model.fit(
                 x[train_idx], y[train_idx],
                 validation_data=(x[test_idx], y[test_idx]),
@@ -341,15 +326,15 @@ class SpeechEmotionModel:
                 verbose=0
             )
 
-            self.model.load_weights(weight_path)  # <-- no by_name or skip_mismatch
+            self.model.load_weights(weight_path)
             best_eva_list = self.model.evaluate(x[test_idx], y[test_idx], verbose=0)
             avg_loss += best_eva_list[0]
             avg_accuracy += best_eva_list[1]
 
-            print(f"{i}_Model evaluation: {best_eva_list}, "
-                  f"Now ACC: {round(avg_accuracy*100 / i, 2)}%")
+            print(f"✅ Fold {i} Accuracy: {round(best_eva_list[1] * 100, 2)}%")
 
             y_pred_best = self.model.predict(x[test_idx])
+            from sklearn.metrics import confusion_matrix, classification_report
             self.matrix.append(confusion_matrix(np.argmax(y[test_idx], axis=1),
                                                 np.argmax(y_pred_best, axis=1)))
 
@@ -369,7 +354,6 @@ class SpeechEmotionModel:
                 zero_division=0
             ))
 
-            # Extract intermediate features
             feature_extractor = KerasModel(
                 inputs=self.model.input,
                 outputs=self.model.layers[-2].output
@@ -380,6 +364,6 @@ class SpeechEmotionModel:
 
             i += 1
 
-        print("Average ACC:", avg_accuracy / self.args.split_fold)
+        print(f"\n📊 Average Accuracy across all folds: {round(avg_accuracy / self.args.split_fold * 100, 2)}%")
         self.acc = avg_accuracy / self.args.split_fold
         return x_feats, y_labels

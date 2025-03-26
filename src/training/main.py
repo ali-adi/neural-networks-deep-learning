@@ -1,3 +1,5 @@
+# main.py
+
 """
 main.py
 
@@ -13,11 +15,16 @@ Entry point for training or testing the SpeechEmotionModel using a temporal
 convolution-based architecture for emotion recognition.
 """
 
-import numpy as np
 import os
+import numpy as np
 import argparse
-import tensorflow as tf
 
+# 1) Suppress TensorFlow and Python warnings
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # Hides all TF logs except errors
+import warnings
+warnings.filterwarnings("ignore")         # Hides Python-level warnings
+
+import tensorflow as tf
 from src.models.model import SpeechEmotionModel
 
 # Define label sets here
@@ -67,6 +74,26 @@ def main():
 
     args = parser.parse_args()
 
+    print("\n==============================")
+    print("🎛️  SPEECH EMOTION RECOGNITION")
+    print("==============================\n")
+    print(f"🧪 Mode: {args.mode.upper()}")
+    print(f"📁 Dataset: {args.data}")
+    print(f"🎯 Output model path: {args.model_path}")
+    print(f"📊 Results will be saved to: {args.result_path}")
+    if args.mode == "test":
+        print(f"📥 Test model weights path: {args.test_path}")
+    print("\n⚙️ Model Settings:")
+    print(f"   Epochs: {args.epoch}")
+    print(f"   Batch Size: {args.batch_size}")
+    print(f"   Learning Rate: {args.lr}")
+    print(f"   Dropout: {args.dropout}")
+    print(f"   Filter Size: {args.filter_size}, Kernel Size: {args.kernel_size}")
+    print(f"   Dilation Size: {args.dilation_size}, Stacks: {args.stack_size}")
+    print(f"   Activation: {args.activation}")
+    print(f"   Cross-Validation Folds: {args.split_fold}")
+    print("\n📦 Loading data...\n")
+
     # GPU setup
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     gpus = tf.config.list_physical_devices('GPU')
@@ -76,11 +103,11 @@ def main():
                 tf.config.experimental.set_memory_growth(gpu, True)
         except RuntimeError as e:
             print(e)
-    print(f"### gpus: {gpus} ###")
+    print(f"🖥️ Available GPUs: {gpus}\n")
 
-    # Auto-adjust for IEMOCAP if needed
     if args.data == "IEMOCAP" and args.dilation_size != 10:
         args.dilation_size = 10
+        print("⚠️ Dilation size adjusted to 10 for IEMOCAP dataset.\n")
 
     # Load data (adjust path if necessary)
     data_path = os.path.join("data", "MFCC", f"{args.data}.npy")  
@@ -89,9 +116,11 @@ def main():
     y_source = loaded_data["y"]
 
     class_labels = LABEL_DICT[args.data]
-    input_shape = x_source.shape[1:]  # (time_steps, feature_dims)
+    input_shape = x_source.shape[1:]
 
-    # Instantiate the model
+    print(f"✅ Data loaded successfully! Shape: {x_source.shape}")
+    print("🧠 Initializing model...\n")
+
     model = SpeechEmotionModel(
         input_shape=input_shape,
         class_labels=class_labels,
@@ -99,10 +128,13 @@ def main():
     )
 
     if args.mode == "train":
+        print("🚀 Starting training...\n")
         model.train(x_source, y_source)
+        print("\n✅ Training complete!\n")
     elif args.mode == "test":
+        print("🧪 Starting testing...\n")
         x_feats, y_labels = model.test(x_source, y_source, path=args.test_path)
-        # x_feats, y_labels are lists containing extracted features/labels per fold
+        print("\n✅ Testing complete!\n")
 
 if __name__ == "__main__":
     main()
