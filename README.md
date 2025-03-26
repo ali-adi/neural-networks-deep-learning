@@ -30,10 +30,14 @@ In this project, we leverage deep learning techniques to accurately classify emo
 
 ## 🛠️ Environment Setup
 
-Let's set up your working environment:
+Let's set up your working environment (Python 3.11.11):
 
 ```bash
-# OPTIONAL: Create and activate a Python virtual environment
+# Set up local python environment
+pyenv install 3.11.11
+pyenv local 3.11.11
+
+# Create and activate a Python virtual environment
 python3 -m venv env
 source env/bin/activate
 
