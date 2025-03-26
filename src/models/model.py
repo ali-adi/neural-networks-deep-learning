@@ -1,23 +1,10 @@
 """
 model.py
 
-HOW TO RUN THIS FILE:
----------------------
-Typically, this file is not run directly. Instead, it's used by main.py or
-imported in other scripts. You can import SpeechEmotionModel in an interactive environment
-or in a custom script.
-
 DESCRIPTION:
 Implements a temporal convolution-based approach for speech emotion recognition,
 including cross-validation, checkpointing, confusion matrices, and metrics.
 
-CHANGES FOR WARNINGS & ERRORS:
-1. Removed by_name=True, skip_mismatch=True in load_weights() to fix 
-   ValueError: Invalid keyword arguments {...}.
-2. Use os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2" + warnings.filterwarnings("ignore") 
-   to suppress common TF and scikit-learn warnings.
-3. zero_division=0 in classification_report() to avoid ill-defined precision warnings.
-4. Removed encoding='utf8' from to_excel() calls.
 """
 
 import os
