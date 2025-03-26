@@ -34,7 +34,7 @@ def get_feature(file_path: str, feature_type:str="MFCC", mean_signal_length:int=
     return feature
 
 def generate_csv(csv_save:str, data_name: str="EMODB", feature_type: str="MFCC", embed_len: int = 39, mean_signal_length:int = 96000, class_labels: Tuple = ("angry", "boredom", "disgust", "fear", "happy", "neutral","sad")):
-    data_path = "../../clean-data/"+data_name# Modify this path
+    data_path = "../clean-data/"+data_name# Modify this path
     current_dir =  os.getcwd()
     if not os.path.exists(csv_save):
         print(csv_save+" build succeed")

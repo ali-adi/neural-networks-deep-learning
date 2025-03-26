@@ -1,3 +1,5 @@
+*.csv
+
 ```gitignore
 # Python bytecode and cache files
 __pycache__/
