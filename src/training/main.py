@@ -28,20 +28,12 @@ import tensorflow as tf
 from src.models.model import SpeechEmotionModel
 
 # Define label sets here
-CASIA_LABELS = ("angry","fear","happy","neutral","sad","surprise")
 EMODB_LABELS = ("angry","boredom","disgust","fear","happy","neutral","sad")
-SAVEE_LABELS = ("angry","disgust","fear","happy","neutral","sad","surprise")
 RAVDE_LABELS = ("angry","calm","disgust","fear","happy","neutral","sad","surprise")
-IEMOCAP_LABELS = ("angry","happy","neutral","sad")
-EMOVO_LABELS = ("angry","disgust","fear","happy","neutral","sad","surprise")
 
 LABEL_DICT = {
-    "CASIA": CASIA_LABELS,
     "EMODB": EMODB_LABELS,
-    "SAVEE": SAVEE_LABELS,
     "RAVDE": RAVDE_LABELS,
-    "IEMOCAP": IEMOCAP_LABELS,
-    "EMOVO": EMOVO_LABELS
 }
 
 def main():
