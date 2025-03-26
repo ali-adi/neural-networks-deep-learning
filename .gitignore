@@ -1,5 +1,6 @@
 *.csv
 *.wav
+*.xlsx
 
 ```gitignore
 # Python bytecode and cache files

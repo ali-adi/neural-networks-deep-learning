@@ -132,6 +132,8 @@ python -m src.training.main \
 **Available Arguments (additional to training):**
 - `--test_path`: Directory containing the trained model weights (default: `./test_models/EMODB_46`).
 
+⚠️ **Important**: Ensure the `--split_fold` parameter matches the number of weight files in the specified saved_models directory (e.g., if there are 5 weight files, set `--split_fold 5`).
+
 Evaluate model generalization and effectiveness.
 
 ## 📌 Important Notes
@@ -141,5 +143,3 @@ Evaluate model generalization and effectiveness.
 - 📚 Use the `--help` flag with scripts for additional details.
 
 Happy exploring! 🎧✨
-
-
