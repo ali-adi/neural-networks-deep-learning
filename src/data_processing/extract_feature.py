@@ -1,179 +1,107 @@
 # extract_feature.py
-
 """
 extract_feature.py
 
 HOW TO RUN THIS FILE:
 ---------------------
-Example:
-    python extract_feature.py --data_name EMODB --mean_signal_length 96000 --output_dir ./EMODB_MFCC_96
+Run in terminal :
+python -m src.data_processing.extract_feature --input_dir datas/processed/EMODB --output_dir datas/features/MFCC/EMODB_MFCC_96 --feature_type mfcc --n_mfcc 96
 
 DESCRIPTION:
-Extracts MFCC features from audio files (e.g., EMODB), saves them as CSV,
-and compiles them into .npy files for model training.
+Extracts audio features (MFCC or log-mel) from .wav files organized into emotion folders.
+Saves features in .npy format in a mirrored directory structure.
 """
 
-import numpy as np
 import os
-import sys
-from typing import Tuple
-from tqdm import tqdm
-import librosa
-from tensorflow.keras.utils import to_categorical
 import argparse
-from natsort import ns, natsorted
+import numpy as np
+import librosa
+from tqdm import tqdm
 
-def get_feature(file_path: str,
-                feature_type:str="MFCC",
-                mean_signal_length:int=96000,
-                embed_len:int=39) -> np.ndarray:
+def extract_mfcc(audio_path, n_mfcc=96, sample_rate=16000):
     """
-    Loads audio from file_path, pads/crops to fixed length,
-    and extracts the chosen feature (MFCC by default).
+    Extract MFCC (Mel-frequency cepstral coefficients) features from an audio file.
+    Args:
+        audio_path (str): Path to the .wav audio file.
+        n_mfcc (int): Number of MFCC coefficients to extract.
+        sample_rate (int): Sampling rate for loading the audio.
+    Returns:
+        np.ndarray: 2D array of shape (time, n_mfcc)
     """
-    signal, fs = librosa.load(file_path, sr=None)
-    s_len = len(signal)
+    waveform, _ = librosa.load(audio_path, sr=sample_rate)
+    mfcc_features = librosa.feature.mfcc(y=waveform, sr=sample_rate, n_mfcc=n_mfcc)
+    return mfcc_features.T  # Transpose so time is the first dimension
 
-    # Pad or crop signal
-    if s_len < mean_signal_length:
-        pad_len = mean_signal_length - s_len
-        pad_rem = pad_len % 2
-        pad_len //= 2
-        signal = np.pad(signal, (pad_len, pad_len + pad_rem), 'constant', constant_values=0)
-    else:
-        pad_len = s_len - mean_signal_length
-        pad_len //= 2
-        signal = signal[pad_len:pad_len + mean_signal_length]
-
-    if feature_type == "MFCC":
-        mfcc_feat = librosa.feature.mfcc(y=signal, sr=fs, n_mfcc=embed_len)
-        return np.transpose(mfcc_feat)
-    else:
-        raise ValueError(f"Unsupported feature_type: {feature_type}")
-
-def generate_csv(csv_save: str,
-                 data_name: str="EMODB",
-                 feature_type: str="MFCC",
-                 embed_len: int=39,
-                 mean_signal_length: int=96000,
-                 class_labels: Tuple=("angry","boredom","disgust","fear","happy","neutral","sad")):
+def extract_logmel(audio_path, sample_rate=16000, n_mels=128):
     """
-    Iterates over emotion folders, extracts features from audio .wav files,
-    and saves them as CSV files in labeled subdirectories under csv_save.
+    Extract log-mel spectrogram features from an audio file.
+    Args:
+        audio_path (str): Path to the .wav audio file.
+        sample_rate (int): Sampling rate for loading the audio.
+        n_mels (int): Number of mel filter banks.
+    Returns:
+        np.ndarray: 2D array of shape (time, n_mels)
     """
-    print("📁 STEP 1: Creating output directories...")
-    current_dir = os.getcwd()
-    if not os.path.exists(csv_save):
-        print(f"📂 Creating folder: {csv_save}")
-        os.makedirs(csv_save)
+    waveform, _ = librosa.load(audio_path, sr=sample_rate)
+    mel_spec = librosa.feature.melspectrogram(y=waveform, sr=sample_rate, n_mels=n_mels)
+    log_mel = librosa.power_to_db(mel_spec)  # Convert power spectrogram to dB scale
+    return log_mel.T  # Transpose so time is the first dimension
 
-    for label_dir in class_labels:
-        label_path = os.path.join(csv_save, label_dir)
-        if not os.path.exists(label_path):
-            os.makedirs(label_path)
-            print(f"📂 Creating label subfolder: {label_path}")
-
-    datapath, labels = [], []
-    dataset_dir = os.path.join("data", "processed", data_name)
-    print("\n🔍 STEP 2: Scanning for .wav files...\n")
-    print(f"📌 Current directory: {current_dir}")
-    print(f"📌 Looking in dataset folder: {dataset_dir}\n")
-
-    for i, directory in enumerate(class_labels):
-        print(f"▶️ Reading label '{directory}'...")
-        emotion_dir = os.path.join(dataset_dir, directory)
-        filelist = os.listdir(emotion_dir)
-        for f in tqdm(filelist, desc=f"📦 {directory}"):
-            if f.endswith('.wav'):
-                filepath = os.path.join(emotion_dir, f)
-                datapath.append(filepath)
-                labels.append(i)
-        print(f"✅ Finished reading '{directory}'\n")
-
-    print("🎧 STEP 3: Extracting features and saving CSV files...\n")
-    for (video_path, label) in tqdm(zip(datapath, labels), total=len(datapath), desc="🚀 Extracting"):
-        filename = os.path.splitext(os.path.basename(video_path))[0]
-        feature_vector = get_feature(file_path=video_path,
-                                     feature_type=feature_type,
-                                     mean_signal_length=mean_signal_length,
-                                     embed_len=embed_len)
-        csv_filename = f"{filename}_raw.csv"
-        csv_filepath = os.path.join(csv_save, class_labels[label], csv_filename)
-        np.savetxt(csv_filepath, feature_vector, delimiter=',')
-
-    print("\n✅ All features extracted and saved as CSV!\n")
-
-def process_csv(data_path: str,
-                mfcc_len: int=39,
-                class_labels: Tuple=("angry","boredom","disgust","fear","happy","neutral","sad"),
-                flatten: bool=False):
+def process_directory(input_root, output_root, feature_type="mfcc", n_mfcc=96):
     """
-    Reads CSV files (previously generated) in data_path into NumPy arrays.
+    Processes a root directory of labeled audio folders, extracting features from each .wav file.
+    Args:
+        input_root (str): Root directory containing folders labeled by emotion.
+        output_root (str): Destination directory to save .npy feature files.
+        feature_type (str): Type of features to extract ('mfcc' or 'logmel').
+        n_mfcc (int): Number of MFCC coefficients (used only for MFCC extraction).
     """
-    print("🧾 STEP 4: Compiling CSVs into .npy arrays...\n")
-    x, y = [], []
-    current_dir = os.getcwd()
-    print(f"📌 Current directory: {current_dir}")
-    os.chdir(data_path)
+    os.makedirs(output_root, exist_ok=True)
+    print(f"\n📂 Extracting {feature_type.upper()} features...")
 
-    for i, directory in enumerate(class_labels):
-        print(f"🔄 Reading CSVs from: {directory}")
-        os.chdir(directory)
-        file_list = natsorted(os.listdir('.'), alg=ns.PATH)
-        for filename in tqdm(file_list, desc=f"📄 {directory}"):
-            if filename.endswith('.csv') and not filename.endswith('time.csv'):
-                filepath = os.path.join(os.getcwd(), filename)
-                feature_vector = np.loadtxt(filepath, delimiter=",", dtype=np.float32)
-                x.append(feature_vector)
-                y.append(i)
-        os.chdir('..')
-        print(f"✅ Done with '{directory}'\n")
+    # Iterate over each emotion folder in the input directory
+    for emotion_label in os.listdir(input_root):
+        input_emotion_path = os.path.join(input_root, emotion_label)
+        if not os.path.isdir(input_emotion_path):
+            continue  # Skip non-folder files
 
-    os.chdir(current_dir)
-    print("✅ CSV compilation complete!\n")
-    return np.array(x), np.array(y)
+        # Create corresponding output folder for saving features
+        output_emotion_path = os.path.join(output_root, emotion_label)
+        os.makedirs(output_emotion_path, exist_ok=True)
+
+        # Iterate through each .wav file in the emotion-labeled folder
+        for file in tqdm(os.listdir(input_emotion_path), desc=f"{emotion_label}"):
+            if not file.endswith(".wav"):
+                continue  # Skip non-wav files
+
+            audio_path = os.path.join(input_emotion_path, file)
+
+            # Extract features based on selected feature type
+            if feature_type == "mfcc":
+                features = extract_mfcc(audio_path, n_mfcc=n_mfcc)
+            elif feature_type == "logmel":
+                features = extract_logmel(audio_path)
+            else:
+                raise ValueError(f"Unsupported feature type: {feature_type}")
+
+            # Save extracted features in .npy format
+            output_path = os.path.join(output_emotion_path, file.replace(".wav", ".npy"))
+            np.save(output_path, features)
+
+    print("✅ Feature extraction complete.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract features from audio dataset.")
-    parser.add_argument("--data_name", type=str, default="EMODB",
-                        help="Name of the dataset, e.g., EMODB, CASIA, etc.")
-    parser.add_argument("--mean_signal_length", type=int, default=96000,
-                        help="Length (in samples) to pad/crop each audio signal.")
-    parser.add_argument("--feature_type", type=str, default="MFCC",
-                        help="Type of audio feature to extract (e.g., MFCC).")
-    parser.add_argument("--embed_len", type=int, default=39,
-                        help="Number of feature coefficients (e.g., MFCC).")
-    parser.add_argument("--output_dir", type=str, default="./EMODB_MFCC_96",
-                        help="Where to save CSV files of extracted features.")
+    # Set up argument parser for command-line usage
+    parser = argparse.ArgumentParser(description="Extract audio features from labeled .wav files.")
+    parser.add_argument("--input_dir", type=str, required=True, help="Path to input directory with emotion-labeled .wav files")
+    parser.add_argument("--output_dir", type=str, required=True, help="Path to save output .npy feature files")
+    parser.add_argument("--feature_type", type=str, default="mfcc", choices=["mfcc", "logmel"], help="Choose type of feature to extract")
+    parser.add_argument("--n_mfcc", type=int, default=96, help="Number of MFCC coefficients (used only if feature_type is 'mfcc')")
+
     args = parser.parse_args()
 
-    print("\n==============================")
-    print("🎙️  STARTING FEATURE EXTRACTION")
-    print("==============================\n")
-
-    EMODB_LABELS = ("angry","boredom","disgust","fear","happy","neutral","sad")
-
-    generate_csv(
-        csv_save=args.output_dir,
-        data_name=args.data_name,
-        feature_type=args.feature_type,
-        embed_len=args.embed_len,
-        mean_signal_length=args.mean_signal_length,
-        class_labels=EMODB_LABELS
-    )
-
-    x, y = process_csv(args.output_dir, mfcc_len=args.embed_len, class_labels=EMODB_LABELS, flatten=False)
-    y = to_categorical(y, num_classes=len(EMODB_LABELS))
-    data_dict = {"x": x, "y": y}
-
-    # 1) Construct the output path under data/MFCC
-    output_npy_path = os.path.join("data", "MFCC", f"{args.data_name}.npy")
-
-    # 2) Save to the new location
-    np.save(output_npy_path, data_dict)
-
-    print(f"📦 Feature arrays saved to `{output_npy_path}`\n")
-    print("✅ FEATURE EXTRACTION COMPLETE!\n")
+    # Start processing based on user input
+    process_directory(args.input_dir, args.output_dir, args.feature_type, args.n_mfcc)
 
 if __name__ == "__main__":
     main()

@@ -1,163 +1,110 @@
 # model.py
-
 """
 model.py
 
 DESCRIPTION:
-Implements a temporal convolution-based approach for speech emotion recognition,
-including cross-validation, checkpointing, confusion matrices, and metrics.
+Implements a DTPM (Discriminant Temporal Pyramid Matching) + Attention-based
+architecture for Speech Emotion Recognition (SER).
+
+The model uses:
+- Temporal convolution blocks with dilation for wide receptive fields (TCN style)
+- Bidirectional modeling (forward and backward streams)
+- Gated residual connections to preserve feature identity
+- Weighted feature aggregation via learnable attention
+- Cross-validation training and evaluation support
+
+Key research-oriented features:
+- Temporal modeling similar to TM-Net
+- Attention-based aggregation (akin to self-attention)
+- Label smoothing for generalization
+- Excel output for evaluation metrics (saved in result_path/ under dataset-specific folders)
 """
 
+# Suppress unnecessary warnings for cleaner output
 import os
-# --- WARNING SUPPRESSION ---
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # Hide all TensorFlow warnings
 import warnings
-warnings.filterwarnings("ignore")         # Hide Python-level warnings
-# ---------------------------
+warnings.filterwarnings("ignore")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
+# Standard libraries
 import numpy as np
 import datetime
 import copy
 import pandas as pd
+import shutil
+
+# TensorFlow imports
 import tensorflow as tf
 import tensorflow.keras.backend as K
-
 from tensorflow.keras.layers import (
-    Conv1D,
-    SpatialDropout1D,
-    BatchNormalization,
-    Activation,
-    add,
-    GlobalAveragePooling1D,
-    Lambda,
-    Dense,
-    Input,
+    Conv1D, SpatialDropout1D, BatchNormalization, Activation, add,
+    GlobalAveragePooling1D, Lambda, Dense, Input
 )
-from tensorflow.keras.activations import sigmoid
 from tensorflow.keras.models import Model as KerasModel
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import callbacks
-from sklearn.model_selection import KFold
-from sklearn.metrics import confusion_matrix, classification_report
+from tensorflow.keras.activations import sigmoid
 from tensorflow.keras.utils import to_categorical
 
-def temporal_block(
-    x,
-    dilation,
-    activation,
-    nb_filters,
-    kernel_size,
-    dropout_rate=0.0
-):
-    original_x = x
+# Evaluation tools
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.model_selection import KFold
 
-    # 1st conv
-    conv_1 = Conv1D(filters=nb_filters,
-                    kernel_size=kernel_size,
-                    dilation_rate=dilation,
-                    padding='causal')(x)
-    conv_1 = BatchNormalization(trainable=True, axis=-1)(conv_1)
-    conv_1 = Activation(activation)(conv_1)
-    conv_1 = SpatialDropout1D(dropout_rate)(conv_1)
+# ------------------------
+# TEMPORAL BLOCK DEFINITION
+# ------------------------
+def temporal_block(inputs, dilation, activation, nb_filters, kernel_size, dropout_rate=0.0):
+    skip_connection = inputs
+    x = Conv1D(filters=nb_filters, kernel_size=kernel_size, dilation_rate=dilation, padding='causal')(inputs)
+    x = BatchNormalization()(x)
+    x = Activation(activation)(x)
+    x = SpatialDropout1D(dropout_rate)(x)
+    x = Conv1D(filters=nb_filters, kernel_size=kernel_size, dilation_rate=dilation, padding='causal')(x)
+    x = BatchNormalization()(x)
+    x = Activation(activation)(x)
+    x = SpatialDropout1D(dropout_rate)(x)
+    if skip_connection.shape[-1] != x.shape[-1]:
+        skip_connection = Conv1D(filters=nb_filters, kernel_size=1, padding='same')(skip_connection)
+    gated = Lambda(sigmoid)(x)
+    return skip_connection * gated
 
-    # 2nd conv
-    conv_2 = Conv1D(filters=nb_filters,
-                    kernel_size=kernel_size,
-                    dilation_rate=dilation,
-                    padding='causal')(conv_1)
-    conv_2 = BatchNormalization(trainable=True, axis=-1)(conv_2)
-    conv_2 = Activation(activation)(conv_2)
-    conv_2 = SpatialDropout1D(dropout_rate)(conv_2)
-
-    # Dim match
-    if original_x.shape[-1] != conv_2.shape[-1]:
-        original_x = Conv1D(filters=nb_filters,
-                            kernel_size=1,
-                            padding='same')(original_x)
-
-    # Gating
-    conv_2 = Lambda(sigmoid)(conv_2)
-    gated_output = original_x * conv_2
-
-    return gated_output
-
+# ------------------------
+# DILATED TEMPORAL NETWORK
+# ------------------------
 class TemporalConvNet:
-    def __init__(
-        self,
-        nb_filters=64,
-        kernel_size=2,
-        nb_stacks=1,
-        dilations=None,
-        activation="relu",
-        dropout_rate=0.1,
-        name='TemporalConvNet'
-    ):
+    def __init__(self, nb_filters=64, kernel_size=2, nb_stacks=1, dilations=8,
+                 activation="relu", dropout_rate=0.1, name='TemporalConvNet'):
         self.name = name
+        self.nb_filters = nb_filters
+        self.kernel_size = kernel_size
+        self.nb_stacks = nb_stacks
+        self.dilations = dilations if isinstance(dilations, int) else 8
         self.activation = activation
         self.dropout_rate = dropout_rate
-        self.dilations = dilations if dilations is not None else 8
-        self.nb_stacks = nb_stacks
-        self.kernel_size = kernel_size
-        self.nb_filters = nb_filters
 
     def __call__(self, inputs):
         forward = inputs
         backward = Lambda(lambda x: tf.reverse(x, axis=[1]))(inputs)
-
-        # Initial 1x1 conv
-        forward_conv = Conv1D(filters=self.nb_filters, kernel_size=1,
-                              dilation_rate=1, padding='causal')(forward)
-        backward_conv = Conv1D(filters=self.nb_filters, kernel_size=1,
-                               dilation_rate=1, padding='causal')(backward)
-
+        f = Conv1D(self.nb_filters, kernel_size=1, padding='causal')(forward)
+        b = Conv1D(self.nb_filters, kernel_size=1, padding='causal')(backward)
         final_skips = []
-        skip_forward = forward_conv
-        skip_backward = backward_conv
-
         for _ in range(self.nb_stacks):
-            for d_pow in [2 ** i for i in range(self.dilations)]:
-                skip_forward = temporal_block(
-                    skip_forward,
-                    dilation=d_pow,
-                    activation=self.activation,
-                    nb_filters=self.nb_filters,
-                    kernel_size=self.kernel_size,
-                    dropout_rate=self.dropout_rate
-                )
-                skip_backward = temporal_block(
-                    skip_backward,
-                    dilation=d_pow,
-                    activation=self.activation,
-                    nb_filters=self.nb_filters,
-                    kernel_size=self.kernel_size,
-                    dropout_rate=self.dropout_rate
-                )
-
-                merged_skip = add([skip_forward, skip_backward])
-                merged_skip = GlobalAveragePooling1D()(merged_skip)
-                merged_skip = Lambda(lambda x: tf.expand_dims(x, axis=1))(merged_skip)
-                final_skips.append(merged_skip)
-
-        # Combine all skip outputs
-        output = Lambda(lambda tensors: tf.concat(tensors, axis=-2))(final_skips)
-        return output
+            for dilation_rate in [2 ** i for i in range(self.dilations)]:
+                f = temporal_block(f, dilation_rate, self.activation, self.nb_filters, self.kernel_size, self.dropout_rate)
+                b = temporal_block(b, dilation_rate, self.activation, self.nb_filters, self.kernel_size, self.dropout_rate)
+                merged = add([f, b])
+                pooled = GlobalAveragePooling1D()(merged)
+                expanded = Lambda(lambda x: tf.expand_dims(x, axis=1))(pooled)
+                final_skips.append(expanded)
+        return Lambda(lambda x: tf.concat(x, axis=1))(final_skips)
 
 class WeightLayer(tf.keras.layers.Layer):
-    def __init__(self, **kwargs):
-        super(WeightLayer, self).__init__(**kwargs)
-
     def build(self, input_shape):
-        self.kernel = self.add_weight(
-            name='kernel',
-            shape=(input_shape[1], 1),
-            initializer='uniform',
-            trainable=True
-        )
-        super(WeightLayer, self).build(input_shape)
+        self.kernel = self.add_weight("kernel", shape=(input_shape[1], 1), initializer='uniform', trainable=True)
 
     def call(self, inputs):
-        transposed = tf.transpose(inputs, [0, 2, 1])
-        x = tf.matmul(transposed, self.kernel)
+        x = tf.transpose(inputs, [0, 2, 1])
+        x = tf.matmul(x, self.kernel)
         return tf.squeeze(x, axis=-1)
 
 def smooth_labels(labels, factor=0.1):
@@ -168,7 +115,7 @@ def smooth_labels(labels, factor=0.1):
 class SpeechEmotionModel:
     def __init__(self, input_shape, class_labels, args):
         self.args = args
-        self.data_shape = input_shape
+        self.input_shape = input_shape
         self.num_classes = len(class_labels)
         self.class_labels = class_labels
         self.model = None
@@ -176,13 +123,16 @@ class SpeechEmotionModel:
         self.eva_matrix = []
         self.acc = 0
         self.trained = False
+        self.result_dir = os.path.join(self.args.result_path, self.args.data)
+        self.now = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        self.best_fold_acc = 0
+        self.best_fold_weight_path = ""
 
-        print(f"🧠 Initialized SpeechEmotionModel with input shape: {input_shape}")
+        print(f"🧠 Initialized SER model with input shape: {input_shape}")
 
     def create_model(self):
         print("\n🛠️ Building model architecture...")
-        inputs = Input(shape=(self.data_shape[0], self.data_shape[1]))
-
+        inputs = Input(shape=(self.input_shape[0], self.input_shape[1]))
         conv_net = TemporalConvNet(
             nb_filters=self.args.filter_size,
             kernel_size=self.args.kernel_size,
@@ -191,179 +141,101 @@ class SpeechEmotionModel:
             dropout_rate=self.args.dropout,
             activation=self.args.activation
         )
-        conv_out = conv_net(inputs)
-        weighted = WeightLayer()(conv_out)
-        outputs = Dense(self.num_classes, activation='softmax')(weighted)
-
+        conv_output = conv_net(inputs)
+        attention_out = WeightLayer()(conv_output)
+        outputs = Dense(self.num_classes, activation='softmax')(attention_out)
         self.model = KerasModel(inputs=inputs, outputs=outputs)
-
-        optimizer = Adam(
-            learning_rate=self.args.lr,
-            beta_1=self.args.beta1,
-            beta_2=self.args.beta2,
-            epsilon=1e-8
-        )
-        self.model.compile(
-            loss="categorical_crossentropy",
-            optimizer=optimizer,
-            metrics=['accuracy']
-        )
+        optimizer = Adam(learning_rate=self.args.lr, beta_1=self.args.beta1, beta_2=self.args.beta2, epsilon=1e-8)
+        self.model.compile(loss="categorical_crossentropy", optimizer=optimizer, metrics=['accuracy'])
         print("✅ Model compiled successfully!\n")
 
     def train(self, x, y):
-        print("🎯 Starting training loop with cross-validation...\n")
-        filepath = self.args.model_path
-        resultpath = self.args.result_path
-        os.makedirs(filepath, exist_ok=True)
-        os.makedirs(resultpath, exist_ok=True)
-
-        from sklearn.model_selection import KFold
+        print("🎯 Starting k-fold training...")
+        save_dir = self.args.model_path
+        os.makedirs(save_dir, exist_ok=True)
+        os.makedirs(self.result_dir, exist_ok=True)
+        test_model_dir = os.path.join("test_models", self.args.data)
+        os.makedirs(test_model_dir, exist_ok=True)
         kfold = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=self.args.random_seed)
-        avg_accuracy, avg_loss = 0, 0
-        i = 1
-        now_time = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        avg_acc, avg_loss = 0, 0
 
-        for train_idx, test_idx in kfold.split(x, y):
-            print(f"🔁 Fold {i} of {self.args.split_fold}")
+        for fold_idx, (train_idx, test_idx) in enumerate(kfold.split(x, y), 1):
+            print(f"🔁 Fold {fold_idx}/{self.args.split_fold}")
             self.create_model()
-            y_train_smooth = smooth_labels(copy.deepcopy(y[train_idx]), 0.1)
-
-            fold_folder = os.path.join(filepath, f"{self.args.data}_{self.args.random_seed}_{now_time}")
+            y_train_smoothed = smooth_labels(copy.deepcopy(y[train_idx]), 0.1)
+            fold_folder = os.path.join(save_dir, f"{self.args.data}_{self.args.random_seed}_{self.now}")
             os.makedirs(fold_folder, exist_ok=True)
-
-            weight_path = os.path.join(fold_folder, f"{self.args.split_fold}-fold_weights_best_{i}.weights.h5")
-
-            checkpoint = callbacks.ModelCheckpoint(
-                weight_path,
-                verbose=1,
-                save_weights_only=True,
-                save_best_only=False
-            )
+            weight_name = f"{self.args.split_fold}-fold_weights_best_{fold_idx}.weights.h5"
+            weight_path = os.path.join(fold_folder, weight_name)
             self.model.fit(
-                x[train_idx], y_train_smooth,
+                x[train_idx], y_train_smoothed,
                 validation_data=(x[test_idx], y[test_idx]),
                 batch_size=self.args.batch_size,
                 epochs=self.args.epoch,
                 verbose=1,
-                callbacks=[checkpoint]
+                callbacks=[callbacks.ModelCheckpoint(weight_path, verbose=1, save_weights_only=True)]
             )
-
-            print("📊 Evaluating model...")
             self.model.load_weights(weight_path)
-            best_eva_list = self.model.evaluate(x[test_idx], y[test_idx], verbose=0)
-            avg_loss += best_eva_list[0]
-            avg_accuracy += best_eva_list[1]
+            loss, acc = self.model.evaluate(x[test_idx], y[test_idx], verbose=0)
+            avg_loss += loss
+            avg_acc += acc
+            print(f"✅ Fold {fold_idx} Accuracy: {round(acc * 100, 2)}%")
 
-            print(f"✅ Fold {i} Accuracy: {round(best_eva_list[1] * 100, 2)}%")
+            if acc > self.best_fold_acc:
+                self.best_fold_acc = acc
+                self.best_fold_weight_path = weight_path
 
-            y_pred_best = self.model.predict(x[test_idx])
-            from sklearn.metrics import confusion_matrix, classification_report
-            self.matrix.append(confusion_matrix(np.argmax(y[test_idx], axis=1),
-                                                np.argmax(y_pred_best, axis=1)))
-
-            em = classification_report(
+            y_pred = self.model.predict(x[test_idx])
+            self.matrix.append(confusion_matrix(np.argmax(y[test_idx], axis=1), np.argmax(y_pred, axis=1)))
+            eval_dict = classification_report(
                 np.argmax(y[test_idx], axis=1),
-                np.argmax(y_pred_best, axis=1),
+                np.argmax(y_pred, axis=1),
                 target_names=self.class_labels,
-                output_dict=True,
-                zero_division=0
+                output_dict=True, zero_division=0
             )
-            self.eva_matrix.append(em)
-
+            self.eva_matrix.append(eval_dict)
             print(classification_report(
                 np.argmax(y[test_idx], axis=1),
-                np.argmax(y_pred_best, axis=1),
-                target_names=self.class_labels,
-                zero_division=0
-            ))
-            i += 1
+                np.argmax(y_pred, axis=1),
+                target_names=self.class_labels, zero_division=0))
 
-        print(f"\n📈 Average Accuracy: {round(avg_accuracy / self.args.split_fold * 100, 2)}%")
-        self.acc = avg_accuracy / self.args.split_fold
+        self.acc = avg_acc / self.args.split_fold
+        print(f"\n📊 Average Accuracy over {self.args.split_fold} folds: {round(self.acc * 100, 2)}%")
 
-        result_filename = f"{self.args.data}_{self.args.split_fold}fold_{round(self.acc*100, 2)}_{self.args.random_seed}_{now_time}.xlsx"
-        result_filepath = os.path.join(resultpath, result_filename)
-        writer = pd.ExcelWriter(result_filepath)
+        # Save best weight to test_models
+        if self.best_fold_weight_path:
+            best_name = os.path.basename(self.best_fold_weight_path)
+            shutil.copy(self.best_fold_weight_path, os.path.join(test_model_dir, best_name))
+            print(f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to test_models/{self.args.data}/{best_name}")
 
-        for j, matrix_data in enumerate(self.matrix):
-            temp_dict = {" ": self.class_labels}
-            for c_idx, row in enumerate(matrix_data):
-                temp_dict[self.class_labels[c_idx]] = row
-            df_cm = pd.DataFrame(temp_dict)
-            df_cm.to_excel(writer, sheet_name=str(j))
-
-            df_eval = pd.DataFrame(self.eva_matrix[j]).transpose()
-            df_eval.to_excel(writer, sheet_name=str(j) + "_evaluate")
-
+    def evaluate_test(self, x_test, y_test, path):
+        self.create_model()
+        self.model.load_weights(path)
+        loss, acc = self.model.evaluate(x_test, y_test, verbose=1)
+        print(f"\n🎯 Test Loss: {loss:.4f}, Test Accuracy: {acc:.4f}")
+        y_pred = self.model.predict(x_test)
+        print("\n🧾 Classification Report:")
+        print(classification_report(
+            np.argmax(y_test, axis=1),
+            np.argmax(y_pred, axis=1),
+            target_names=self.class_labels,
+            zero_division=0
+        ))
+        result_file = os.path.join(self.result_dir, f"{self.args.data}_test_{round(acc * 100, 2)}_{self.args.random_seed}_{self.now}.xlsx")
+        print(f"📁 Saving evaluation results to: {result_file}")
+        writer = pd.ExcelWriter(result_file)
+        df_cm = pd.DataFrame(confusion_matrix(np.argmax(y_test, axis=1), np.argmax(y_pred, axis=1)), columns=self.class_labels, index=self.class_labels)
+        df_cm.to_excel(writer, sheet_name="Confusion_Matrix")
+        df_eval = pd.DataFrame(classification_report(
+            np.argmax(y_test, axis=1),
+            np.argmax(y_pred, axis=1),
+            target_names=self.class_labels,
+            output_dict=True, zero_division=0
+        )).T
+        df_eval.to_excel(writer, sheet_name="Classification_Report")
         writer.close()
-
         K.clear_session()
         self.matrix = []
         self.eva_matrix = []
-        self.acc = 0
         self.trained = True
-        print("📝 Evaluation results saved!\n")
-
-    def test(self, x, y, path):
-        print(f"\n🔎 Beginning model evaluation on test set...")
-        from sklearn.model_selection import KFold
-        kfold = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=self.args.random_seed)
-        avg_accuracy, avg_loss = 0, 0
-        i = 1
-        x_feats, y_labels = [], []
-
-        for train_idx, test_idx in kfold.split(x, y):
-            print(f"📁 Testing Fold {i}")
-            self.create_model()
-
-            weight_path = os.path.join(path, f"{self.args.split_fold}-fold_weights_best_{i}.weights.h5")
-
-            self.model.fit(
-                x[train_idx], y[train_idx],
-                validation_data=(x[test_idx], y[test_idx]),
-                batch_size=self.args.batch_size,
-                epochs=0,
-                verbose=0
-            )
-
-            self.model.load_weights(weight_path)
-            best_eva_list = self.model.evaluate(x[test_idx], y[test_idx], verbose=0)
-            avg_loss += best_eva_list[0]
-            avg_accuracy += best_eva_list[1]
-
-            print(f"✅ Fold {i} Accuracy: {round(best_eva_list[1] * 100, 2)}%")
-
-            y_pred_best = self.model.predict(x[test_idx])
-            from sklearn.metrics import confusion_matrix, classification_report
-            self.matrix.append(confusion_matrix(np.argmax(y[test_idx], axis=1),
-                                                np.argmax(y_pred_best, axis=1)))
-
-            em = classification_report(
-                np.argmax(y[test_idx], axis=1),
-                np.argmax(y_pred_best, axis=1),
-                target_names=self.class_labels,
-                output_dict=True,
-                zero_division=0
-            )
-            self.eva_matrix.append(em)
-
-            print(classification_report(
-                np.argmax(y[test_idx], axis=1),
-                np.argmax(y_pred_best, axis=1),
-                target_names=self.class_labels,
-                zero_division=0
-            ))
-
-            feature_extractor = KerasModel(
-                inputs=self.model.input,
-                outputs=self.model.layers[-2].output
-            )
-            feats = feature_extractor.predict(x[test_idx])
-            x_feats.append(feats)
-            y_labels.append(y[test_idx])
-
-            i += 1
-
-        print(f"\n📊 Average Accuracy across all folds: {round(avg_accuracy / self.args.split_fold * 100, 2)}%")
-        self.acc = avg_accuracy / self.args.split_fold
-        return x_feats, y_labels
+        print("📝 Evaluation saved. Testing complete.\n")
