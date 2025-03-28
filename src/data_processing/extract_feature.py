@@ -1,5 +1,4 @@
 # extract_feature.py
-
 """
 extract_feature.py
 
