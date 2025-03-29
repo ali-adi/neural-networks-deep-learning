@@ -25,41 +25,45 @@ Key research-oriented features:
 # ---------------------------
 import os
 import warnings
-warnings.filterwarnings("ignore")        # Suppress Python-level warnings
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3" # Hide most TensorFlow logs (only errors remain)
+
+warnings.filterwarnings("ignore")  # Suppress Python-level warnings
+os.environ[
+    "TF_CPP_MIN_LOG_LEVEL"
+] = "3"  # Hide most TensorFlow logs (only errors remain)
 # ---------------------------
+
+import copy
+import datetime
+import shutil
 
 # Standard libraries
 import numpy as np
-import datetime
-import copy
 import pandas as pd
-import shutil
-
 # TensorFlow imports
 import tensorflow as tf
 import tensorflow.keras.backend as K
-from tensorflow.keras.layers import (
-    Conv1D, SpatialDropout1D, BatchNormalization, Activation, add,
-    GlobalAveragePooling1D, Lambda, Dense, Input
-)
-from tensorflow.keras.models import Model as KerasModel
-from tensorflow.keras.optimizers import Adam
+# Evaluation tools
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import KFold
 from tensorflow.keras import callbacks
 from tensorflow.keras.activations import sigmoid
+from tensorflow.keras.layers import (Activation, BatchNormalization, Conv1D,
+                                     Dense, GlobalAveragePooling1D, Input,
+                                     Lambda, SpatialDropout1D, add)
+from tensorflow.keras.models import Model as KerasModel
+from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.utils import to_categorical
 
-# Evaluation tools
-from sklearn.metrics import confusion_matrix, classification_report
-from sklearn.model_selection import KFold
 
 # ------------------------
 # TEMPORAL BLOCK DEFINITION (DTPM Building Block)
 # ------------------------
-def temporal_block(inputs, dilation, activation, nb_filters, kernel_size, dropout_rate=0.0):
+def temporal_block(
+    inputs, dilation, activation, nb_filters, kernel_size, dropout_rate=0.0
+):
     """
     A single temporal block that uses dilated convolutions, gating, and residual connections.
-    
+
     - 'dilation' indicates the temporal spacing for the convolutions, capturing multi-scale patterns.
     - 'skip_connection' references the input so we can add a residual path.
     - 'SpatialDropout1D' applies dropout across feature maps for better regularization.
@@ -67,24 +71,37 @@ def temporal_block(inputs, dilation, activation, nb_filters, kernel_size, dropou
     """
     skip_connection = inputs
     # 1st dilated convolution + batch norm + activation + dropout
-    x = Conv1D(filters=nb_filters, kernel_size=kernel_size, dilation_rate=dilation, padding='causal')(inputs)
+    x = Conv1D(
+        filters=nb_filters,
+        kernel_size=kernel_size,
+        dilation_rate=dilation,
+        padding="causal",
+    )(inputs)
     x = BatchNormalization()(x)
     x = Activation(activation)(x)
     x = SpatialDropout1D(dropout_rate)(x)
 
     # 2nd dilated convolution + batch norm + activation + dropout
-    x = Conv1D(filters=nb_filters, kernel_size=kernel_size, dilation_rate=dilation, padding='causal')(x)
+    x = Conv1D(
+        filters=nb_filters,
+        kernel_size=kernel_size,
+        dilation_rate=dilation,
+        padding="causal",
+    )(x)
     x = BatchNormalization()(x)
     x = Activation(activation)(x)
     x = SpatialDropout1D(dropout_rate)(x)
 
     # If the input channel dimension (skip_connection) doesn't match 'x', fix it with a 1x1 conv
     if skip_connection.shape[-1] != x.shape[-1]:
-        skip_connection = Conv1D(filters=nb_filters, kernel_size=1, padding='same')(skip_connection)
+        skip_connection = Conv1D(filters=nb_filters, kernel_size=1, padding="same")(
+            skip_connection
+        )
 
     # Apply a gating mechanism with sigmoid, then multiply elementwise with skip connection
     gated = Lambda(sigmoid)(x)
     return skip_connection * gated
+
 
 # ------------------------
 # DILATED TEMPORAL NETWORK (DTPM + Bidirectional Streams)
@@ -94,8 +111,17 @@ class TemporalConvNet:
     Constructs a temporal pyramid using multiple dilation rates, in both forward and backward directions.
     This design is akin to DTPM for capturing multi-scale features, and TM-Net style for bidirectional streams.
     """
-    def __init__(self, nb_filters=64, kernel_size=2, nb_stacks=1, dilations=8,
-                 activation="relu", dropout_rate=0.1, name='TemporalConvNet'):
+
+    def __init__(
+        self,
+        nb_filters=64,
+        kernel_size=2,
+        nb_stacks=1,
+        dilations=8,
+        activation="relu",
+        dropout_rate=0.1,
+        name="TemporalConvNet",
+    ):
         # Initialize hyperparameters for the TCN
         self.name = name
         self.nb_filters = nb_filters
@@ -112,8 +138,8 @@ class TemporalConvNet:
         backward = Lambda(lambda x: tf.reverse(x, axis=[1]))(inputs)
 
         # 1x1 conv transformations for forward/backward to standardize dimensions
-        f = Conv1D(self.nb_filters, kernel_size=1, padding='causal')(forward)
-        b = Conv1D(self.nb_filters, kernel_size=1, padding='causal')(backward)
+        f = Conv1D(self.nb_filters, kernel_size=1, padding="causal")(forward)
+        b = Conv1D(self.nb_filters, kernel_size=1, padding="causal")(backward)
 
         # We'll collect pooled outputs (final_skips) after each dilation step
         final_skips = []
@@ -121,10 +147,24 @@ class TemporalConvNet:
         # 'nb_stacks' allows repetition of the entire dilation cycle
         for _ in range(self.nb_stacks):
             # Dilation rates go as powers of 2 up to self.dilations
-            for dilation_rate in [2 ** i for i in range(self.dilations)]:
+            for dilation_rate in [2**i for i in range(self.dilations)]:
                 # Apply 'temporal_block' to the forward and backward streams
-                f = temporal_block(f, dilation_rate, self.activation, self.nb_filters, self.kernel_size, self.dropout_rate)
-                b = temporal_block(b, dilation_rate, self.activation, self.nb_filters, self.kernel_size, self.dropout_rate)
+                f = temporal_block(
+                    f,
+                    dilation_rate,
+                    self.activation,
+                    self.nb_filters,
+                    self.kernel_size,
+                    self.dropout_rate,
+                )
+                b = temporal_block(
+                    b,
+                    dilation_rate,
+                    self.activation,
+                    self.nb_filters,
+                    self.kernel_size,
+                    self.dropout_rate,
+                )
 
                 # Merge forward + backward with an elementwise add
                 merged = add([f, b])
@@ -141,6 +181,7 @@ class TemporalConvNet:
         # Concatenate all pyramid outputs along axis=1 (the newly expanded dimension)
         return Lambda(lambda x: tf.concat(x, axis=1))(final_skips)
 
+
 # ------------------------
 # WEIGHT LAYER (Attention-like Aggregation)
 # ------------------------
@@ -149,9 +190,12 @@ class WeightLayer(tf.keras.layers.Layer):
     A learnable layer that assigns weights to each timestep (pyramid level),
     effectively an attention-like mechanism that sums across the time dimension.
     """
+
     def build(self, input_shape):
         # Create a trainable kernel for weighting each time-step
-        self.kernel = self.add_weight("kernel", shape=(input_shape[1], 1), initializer='uniform', trainable=True)
+        self.kernel = self.add_weight(
+            "kernel", shape=(input_shape[1], 1), initializer="uniform", trainable=True
+        )
 
     def call(self, inputs):
         # Inputs shape: (batch, time_steps, features)
@@ -162,14 +206,16 @@ class WeightLayer(tf.keras.layers.Layer):
         # Squeeze out the last dim -> final shape: (batch, features)
         return tf.squeeze(x, axis=-1)
 
+
 def smooth_labels(labels, factor=0.1):
     """
     Slightly reduces confidence in the true label, distributing it across other classes.
     Helps with generalization and reduces overfitting (label smoothing).
     """
-    labels *= (1 - factor)
-    labels += (factor / labels.shape[1])
+    labels *= 1 - factor
+    labels += factor / labels.shape[1]
     return labels
+
 
 # ------------------------
 # SPEECH EMOTION MODEL (DTPM + TM-Net–style + Cross-Validation)
@@ -187,16 +233,16 @@ class SpeechEmotionModel:
         self.input_shape = input_shape
         self.num_classes = len(class_labels)
         self.class_labels = class_labels
-        self.model = None           # Will be created in create_model()
-        self.matrix = []            # Store confusion matrices after each fold
-        self.eva_matrix = []        # Store classification reports after each fold
-        self.acc = 0                # Average accuracy across folds
+        self.model = None  # Will be created in create_model()
+        self.matrix = []  # Store confusion matrices after each fold
+        self.eva_matrix = []  # Store classification reports after each fold
+        self.acc = 0  # Average accuracy across folds
         self.trained = False
 
         # Where to save results (organized by dataset)
         self.result_dir = os.path.join(self.args.result_path, self.args.data)
         # Timestamp for unique naming
-        self.now = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        self.now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # Track best fold accuracy and path to that fold's weights
         self.best_fold_acc = 0
         self.best_fold_weight_path = ""
@@ -223,7 +269,7 @@ class SpeechEmotionModel:
             nb_stacks=self.args.stack_size,
             dilations=self.args.dilation_size,
             dropout_rate=self.args.dropout,
-            activation=self.args.activation
+            activation=self.args.activation,
         )
 
         # conv_output -> multi-scale pyramid of features
@@ -233,7 +279,7 @@ class SpeechEmotionModel:
         attention_out = WeightLayer()(conv_output)
 
         # Final classification layer: softmax over emotion classes
-        outputs = Dense(self.num_classes, activation='softmax')(attention_out)
+        outputs = Dense(self.num_classes, activation="softmax")(attention_out)
 
         # Build Keras model
         self.model = KerasModel(inputs=inputs, outputs=outputs)
@@ -241,9 +287,11 @@ class SpeechEmotionModel:
             learning_rate=self.args.lr,
             beta_1=self.args.beta1,
             beta_2=self.args.beta2,
-            epsilon=1e-8
+            epsilon=1e-8,
         )
-        self.model.compile(loss="categorical_crossentropy", optimizer=optimizer, metrics=['accuracy'])
+        self.model.compile(
+            loss="categorical_crossentropy", optimizer=optimizer, metrics=["accuracy"]
+        )
         print("✅ Model compiled successfully!\n")
 
     def train(self, x, y):
@@ -261,7 +309,11 @@ class SpeechEmotionModel:
         os.makedirs(test_model_dir, exist_ok=True)
 
         # Prepare K-Fold
-        kfold = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=self.args.random_seed)
+        kfold = KFold(
+            n_splits=self.args.split_fold,
+            shuffle=True,
+            random_state=self.args.random_seed,
+        )
         avg_acc, avg_loss = 0, 0
 
         # For each fold in cross-validation
@@ -273,19 +325,28 @@ class SpeechEmotionModel:
             y_train_smoothed = smooth_labels(copy.deepcopy(y[train_idx]), 0.1)
 
             # Folder for storing weights of this fold
-            fold_folder = os.path.join(save_dir, f"{self.args.data}_{self.args.random_seed}_{self.now}")
+            fold_folder = os.path.join(
+                save_dir, f"{self.args.data}_{self.args.random_seed}_{self.now}"
+            )
             os.makedirs(fold_folder, exist_ok=True)
-            weight_name = f"{self.args.split_fold}-fold_weights_best_{fold_idx}.weights.h5"
+            weight_name = (
+                f"{self.args.split_fold}-fold_weights_best_{fold_idx}.weights.h5"
+            )
             weight_path = os.path.join(fold_folder, weight_name)
 
             # Train the model on the current fold
             self.model.fit(
-                x[train_idx], y_train_smoothed,
+                x[train_idx],
+                y_train_smoothed,
                 validation_data=(x[test_idx], y[test_idx]),
                 batch_size=self.args.batch_size,
                 epochs=self.args.epoch,
                 verbose=1,
-                callbacks=[callbacks.ModelCheckpoint(weight_path, verbose=1, save_weights_only=True)]
+                callbacks=[
+                    callbacks.ModelCheckpoint(
+                        weight_path, verbose=1, save_weights_only=True
+                    )
+                ],
             )
 
             # Load the saved weights for evaluation
@@ -303,29 +364,44 @@ class SpeechEmotionModel:
 
             # Prediction and metrics
             y_pred = self.model.predict(x[test_idx])
-            self.matrix.append(confusion_matrix(np.argmax(y[test_idx], axis=1), np.argmax(y_pred, axis=1)))
+            self.matrix.append(
+                confusion_matrix(
+                    np.argmax(y[test_idx], axis=1), np.argmax(y_pred, axis=1)
+                )
+            )
             eval_dict = classification_report(
                 np.argmax(y[test_idx], axis=1),
                 np.argmax(y_pred, axis=1),
                 target_names=self.class_labels,
-                output_dict=True, zero_division=0
+                output_dict=True,
+                zero_division=0,
             )
             self.eva_matrix.append(eval_dict)
 
-            print(classification_report(
-                np.argmax(y[test_idx], axis=1),
-                np.argmax(y_pred, axis=1),
-                target_names=self.class_labels, zero_division=0))
+            print(
+                classification_report(
+                    np.argmax(y[test_idx], axis=1),
+                    np.argmax(y_pred, axis=1),
+                    target_names=self.class_labels,
+                    zero_division=0,
+                )
+            )
 
         # Average metrics across folds
         self.acc = avg_acc / self.args.split_fold
-        print(f"\n📊 Average Accuracy over {self.args.split_fold} folds: {round(self.acc * 100, 2)}%")
+        print(
+            f"\n📊 Average Accuracy over {self.args.split_fold} folds: {round(self.acc * 100, 2)}%"
+        )
 
         # Save the best fold model to 'test_models'
         if self.best_fold_weight_path:
             best_name = os.path.basename(self.best_fold_weight_path)
-            shutil.copy(self.best_fold_weight_path, os.path.join(test_model_dir, best_name))
-            print(f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to test_models/{self.args.data}/{best_name}")
+            shutil.copy(
+                self.best_fold_weight_path, os.path.join(test_model_dir, best_name)
+            )
+            print(
+                f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to test_models/{self.args.data}/{best_name}"
+            )
 
     def evaluate_test(self, x_test, y_test, path):
         """
@@ -341,14 +417,19 @@ class SpeechEmotionModel:
         y_pred = self.model.predict(x_test)
 
         print("\n🧾 Classification Report:")
-        print(classification_report(
-            np.argmax(y_test, axis=1),
-            np.argmax(y_pred, axis=1),
-            target_names=self.class_labels,
-            zero_division=0
-        ))
+        print(
+            classification_report(
+                np.argmax(y_test, axis=1),
+                np.argmax(y_pred, axis=1),
+                target_names=self.class_labels,
+                zero_division=0,
+            )
+        )
 
-        result_file = os.path.join(self.result_dir, f"{self.args.data}_test_{round(acc * 100, 2)}_{self.args.random_seed}_{self.now}.xlsx")
+        result_file = os.path.join(
+            self.result_dir,
+            f"{self.args.data}_test_{round(acc * 100, 2)}_{self.args.random_seed}_{self.now}.xlsx",
+        )
         print(f"📁 Saving evaluation results to: {result_file}")
         writer = pd.ExcelWriter(result_file)
 
@@ -356,18 +437,20 @@ class SpeechEmotionModel:
         df_cm = pd.DataFrame(
             confusion_matrix(np.argmax(y_test, axis=1), np.argmax(y_pred, axis=1)),
             columns=self.class_labels,
-            index=self.class_labels
+            index=self.class_labels,
         )
         df_cm.to_excel(writer, sheet_name="Confusion_Matrix")
 
         # Classification Report
-        df_eval = pd.DataFrame(classification_report(
-            np.argmax(y_test, axis=1),
-            np.argmax(y_pred, axis=1),
-            target_names=self.class_labels,
-            output_dict=True,
-            zero_division=0
-        )).T
+        df_eval = pd.DataFrame(
+            classification_report(
+                np.argmax(y_test, axis=1),
+                np.argmax(y_pred, axis=1),
+                target_names=self.class_labels,
+                output_dict=True,
+                zero_division=0,
+            )
+        ).T
         df_eval.to_excel(writer, sheet_name="Classification_Report")
 
         writer.close()

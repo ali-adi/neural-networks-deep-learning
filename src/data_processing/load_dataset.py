@@ -28,11 +28,12 @@ All input tensors are padded to match the longest sample in each batch.
 """
 
 import os
+from glob import glob
+
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
 from torch.nn.utils.rnn import pad_sequence
-from glob import glob
+from torch.utils.data import DataLoader, Dataset, random_split
 
 # Dictionary to map emotion label folder names to numeric indices
 LABEL_MAP = {
@@ -42,8 +43,9 @@ LABEL_MAP = {
     "fear": 3,
     "happy": 4,
     "sad": 5,
-    "neutral": 6
+    "neutral": 6,
 }
+
 
 class EmotionFeatureDataset(Dataset):
     def __init__(self, data_directory):
@@ -84,6 +86,7 @@ class EmotionFeatureDataset(Dataset):
         features = np.load(feature_path)
         return torch.tensor(features, dtype=torch.float32), label
 
+
 def collate_fn(batch):
     """
     Custom collate function to handle batches of variable-length sequences.
@@ -93,11 +96,16 @@ def collate_fn(batch):
         Tuple[Tensor, Tensor]: Padded feature tensor and label tensor
     """
     features, labels = zip(*batch)
-    padded_features = pad_sequence(features, batch_first=True)  # (batch_size, max_time, feature_dim)
+    padded_features = pad_sequence(
+        features, batch_first=True
+    )  # (batch_size, max_time, feature_dim)
     labels = torch.tensor(labels, dtype=torch.long)
     return padded_features, labels
 
-def load_feature_dataset(data_directory, batch_size=32, val_split=0.2, shuffle=True, seed=42):
+
+def load_feature_dataset(
+    data_directory, batch_size=32, val_split=0.2, shuffle=True, seed=42
+):
     """
     Loads emotion dataset and returns training and validation DataLoaders.
     Args:
@@ -118,15 +126,22 @@ def load_feature_dataset(data_directory, batch_size=32, val_split=0.2, shuffle=T
 
     if shuffle:
         generator = torch.Generator().manual_seed(seed)
-        train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=generator)
+        train_dataset, val_dataset = random_split(
+            dataset, [train_size, val_size], generator=generator
+        )
     else:
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    )
 
     print(f"✅ DataLoaders ready. Batch size: {batch_size}\n")
     return train_loader, val_loader
+
 
 if __name__ == "__main__":
     print("\n============================")
@@ -135,9 +150,7 @@ if __name__ == "__main__":
 
     # Run a test using the EMODB MFCC features
     train_loader, val_loader = load_feature_dataset(
-        data_directory="datas/features/MFCC/EMODB_MFCC_96",
-        batch_size=4,
-        val_split=0.2
+        data_directory="datas/features/MFCC/EMODB_MFCC_96", batch_size=4, val_split=0.2
     )
 
     # Preview one batch of training data

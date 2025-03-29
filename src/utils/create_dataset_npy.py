@@ -14,11 +14,12 @@ into a single .npy dataset containing padded tensors and one-hot encoded labels.
 Useful for training/testing deep learning models efficiently.
 """
 
-import os
-import numpy as np
-from glob import glob
-from tqdm import tqdm
 import argparse
+import os
+from glob import glob
+
+import numpy as np
+from tqdm import tqdm
 
 # Emotion label mapping (folder name to index)
 LABEL_MAP = {
@@ -28,8 +29,9 @@ LABEL_MAP = {
     "fear": 3,
     "happy": 4,
     "neutral": 5,
-    "sad": 6
+    "sad": 6,
 }
+
 
 def main(feature_folder, output_path):
     features = []
@@ -53,11 +55,11 @@ def main(feature_folder, output_path):
 
     # Padding features to same length
     max_len = max([f.shape[0] for f in features])  # maximum time steps
-    n_feat_dim = features[0].shape[1]              # feature dimension (e.g., 96)
+    n_feat_dim = features[0].shape[1]  # feature dimension (e.g., 96)
     padded_features = np.zeros((len(features), max_len, n_feat_dim))
 
     for i, f in enumerate(features):
-        padded_features[i, :f.shape[0], :] = f
+        padded_features[i, : f.shape[0], :] = f
 
     # One-hot encode labels
     labels = np.array(labels)
@@ -67,17 +69,27 @@ def main(feature_folder, output_path):
     print(f"🏷️ Final label shape: {one_hot_labels.shape}")
 
     # Save as dictionary
-    np.save(output_path, {
-        "x": padded_features,
-        "y": one_hot_labels
-    })
+    np.save(output_path, {"x": padded_features, "y": one_hot_labels})
 
     print(f"\n✅ Dataset saved to: {output_path}")
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert extracted features into .npy dataset for model training.")
-    parser.add_argument("--feature_dir", type=str, required=True, help="Path to the extracted feature folder")
-    parser.add_argument("--output_path", type=str, required=True, help="Path to save the output .npy file")
+    parser = argparse.ArgumentParser(
+        description="Convert extracted features into .npy dataset for model training."
+    )
+    parser.add_argument(
+        "--feature_dir",
+        type=str,
+        required=True,
+        help="Path to the extracted feature folder",
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        required=True,
+        help="Path to save the output .npy file",
+    )
     args = parser.parse_args()
 
     main(args.feature_dir, args.output_path)

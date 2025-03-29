@@ -12,11 +12,13 @@ Extracts audio features (MFCC or log-mel) from .wav files organized into emotion
 Saves features in .npy format in a mirrored directory structure.
 """
 
-import os
 import argparse
-import numpy as np
+import os
+
 import librosa
+import numpy as np
 from tqdm import tqdm
+
 
 def extract_mfcc(audio_path, n_mfcc=96, sample_rate=16000):
     """
@@ -32,6 +34,7 @@ def extract_mfcc(audio_path, n_mfcc=96, sample_rate=16000):
     mfcc_features = librosa.feature.mfcc(y=waveform, sr=sample_rate, n_mfcc=n_mfcc)
     return mfcc_features.T  # Transpose so time is the first dimension
 
+
 def extract_logmel(audio_path, sample_rate=16000, n_mels=128):
     """
     Extract log-mel spectrogram features from an audio file.
@@ -46,6 +49,7 @@ def extract_logmel(audio_path, sample_rate=16000, n_mels=128):
     mel_spec = librosa.feature.melspectrogram(y=waveform, sr=sample_rate, n_mels=n_mels)
     log_mel = librosa.power_to_db(mel_spec)  # Convert power spectrogram to dB scale
     return log_mel.T  # Transpose so time is the first dimension
+
 
 def process_directory(input_root, output_root, feature_type="mfcc", n_mfcc=96):
     """
@@ -85,23 +89,50 @@ def process_directory(input_root, output_root, feature_type="mfcc", n_mfcc=96):
                 raise ValueError(f"Unsupported feature type: {feature_type}")
 
             # Save extracted features in .npy format
-            output_path = os.path.join(output_emotion_path, file.replace(".wav", ".npy"))
+            output_path = os.path.join(
+                output_emotion_path, file.replace(".wav", ".npy")
+            )
             np.save(output_path, features)
 
     print("✅ Feature extraction complete.")
 
+
 def main():
     # Set up argument parser for command-line usage
-    parser = argparse.ArgumentParser(description="Extract audio features from labeled .wav files.")
-    parser.add_argument("--input_dir", type=str, required=True, help="Path to input directory with emotion-labeled .wav files")
-    parser.add_argument("--output_dir", type=str, required=True, help="Path to save output .npy feature files")
-    parser.add_argument("--feature_type", type=str, default="mfcc", choices=["mfcc", "logmel"], help="Choose type of feature to extract")
-    parser.add_argument("--n_mfcc", type=int, default=96, help="Number of MFCC coefficients (used only if feature_type is 'mfcc')")
+    parser = argparse.ArgumentParser(
+        description="Extract audio features from labeled .wav files."
+    )
+    parser.add_argument(
+        "--input_dir",
+        type=str,
+        required=True,
+        help="Path to input directory with emotion-labeled .wav files",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        required=True,
+        help="Path to save output .npy feature files",
+    )
+    parser.add_argument(
+        "--feature_type",
+        type=str,
+        default="mfcc",
+        choices=["mfcc", "logmel"],
+        help="Choose type of feature to extract",
+    )
+    parser.add_argument(
+        "--n_mfcc",
+        type=int,
+        default=96,
+        help="Number of MFCC coefficients (used only if feature_type is 'mfcc')",
+    )
 
     args = parser.parse_args()
 
     # Start processing based on user input
     process_directory(args.input_dir, args.output_dir, args.feature_type, args.n_mfcc)
+
 
 if __name__ == "__main__":
     main()

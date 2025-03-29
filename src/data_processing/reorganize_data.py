@@ -13,20 +13,21 @@ Converts unorganized EMODB .wav files into a directory structure labeled by emot
 Originally created from a one-cell Jupyter notebook (preprocess.ipynb).
 """
 
+import argparse
 import os
 import shutil
-import argparse
 
 # Mapping from sixth character of the filename to the emotion label
 EMOTION_MAP = {
-    'W': 'angry',    # e.g., Wut
-    'L': 'boredom',  # e.g., Langeweile
-    'E': 'disgust',  # e.g., Ekel
-    'A': 'fear',     # e.g., Angst
-    'F': 'happy',    # e.g., Freude
-    'T': 'sad',      # e.g., Trauer
-    'N': 'neutral'   # neutral
+    "W": "angry",  # e.g., Wut
+    "L": "boredom",  # e.g., Langeweile
+    "E": "disgust",  # e.g., Ekel
+    "A": "fear",  # e.g., Angst
+    "F": "happy",  # e.g., Freude
+    "T": "sad",  # e.g., Trauer
+    "N": "neutral",  # neutral
 }
+
 
 def reorganize_emodb(source_dir: str, dest_dir: str):
     """
@@ -51,7 +52,7 @@ def reorganize_emodb(source_dir: str, dest_dir: str):
     unknown_labels = 0
 
     for filename in os.listdir(source_dir):
-        if filename.endswith('.wav'):
+        if filename.endswith(".wav"):
             emotion_code = filename[5].upper()  # Sixth character
             label = EMOTION_MAP.get(emotion_code)
             if label is not None:
@@ -68,6 +69,7 @@ def reorganize_emodb(source_dir: str, dest_dir: str):
         print(f"⚠️ {unknown_labels} files had unknown emotion codes and were skipped.")
     print("\n🎉 REORGANIZATION COMPLETE!\n")
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Reorganize EMODB .wav files into emotion-labeled subdirectories."
@@ -76,17 +78,18 @@ def main():
         "--source_dir",
         type=str,
         required=True,
-        help="Path to the folder containing original .wav files."
+        help="Path to the folder containing original .wav files.",
     )
     parser.add_argument(
         "--dest_dir",
         type=str,
         required=True,
-        help="Destination path where labeled subfolders will be created."
+        help="Destination path where labeled subfolders will be created.",
     )
     args = parser.parse_args()
 
     reorganize_emodb(args.source_dir, args.dest_dir)
+
 
 if __name__ == "__main__":
     main()
