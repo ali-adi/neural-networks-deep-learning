@@ -163,7 +163,14 @@ class SpeechEmotionModel:
     def __init__(self, input_shape, class_labels, args):
         self.args = args
         self.input_shape = input_shape
-        self.num_classes = len(class_labels)
+        
+        # For RAVDESS, we need to ensure num_classes is consistent with the one-hot encoded labels
+        if args.data == "RAVDESS":
+            # Use the shape of the one-hot encoded labels passed to fit() later
+            self.num_classes = max(10, len(class_labels))  # RAVDESS has indices up to 9, requiring 10 classes
+        else:
+            self.num_classes = len(class_labels)
+            
         self.class_labels = class_labels
         self.model = None
         self.matrix = []
@@ -174,6 +181,18 @@ class SpeechEmotionModel:
         self.now = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         self.best_fold_acc = 0
         self.best_fold_weight_path = ""
+
+        # Configure GPU if available (Metal or CUDA)
+        try:
+            with tf.device('/device:GPU:0'):
+                # Test if GPU is working
+                tf.zeros((1, 1))
+                if tf.test.is_built_with_cuda():
+                    print("✅ Model will use CUDA GPU for computation")
+                else:
+                    print("✅ Model will use Metal GPU for computation")
+        except Exception as e:
+            print("⚠️ Model will use CPU")
 
         print(f"🧠 Initialized SER model with input shape: {input_shape}")
 

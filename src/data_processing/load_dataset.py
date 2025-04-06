@@ -61,9 +61,14 @@ LABEL_MAP = {
     'neutral': 5,
     'sad': 6,
     
-    # RAVDESS labels
-    'calm': 7,
-    'fearful': 8,
+    # RAVDESS labels - using the actual indices from the data
+    'calm': 0,
+    'angry': 2,
+    'disgust': 4,
+    'fear': 5,
+    'happy': 6,
+    'neutral': 7,
+    'sad': 8,
     'surprised': 9
 }
 
@@ -155,13 +160,13 @@ def load_fused_tensorflow_dataset(dataset_name):
     Fuses HuBERT and logmel .npy features for TensorFlow training.
 
     Args:
-        dataset_name (str): e.g., "EMODB"
+        dataset_name (str): e.g., "EMODB" or "RAVDESS"
 
     Returns:
         Tuple[np.ndarray, np.ndarray]: x_fused, y_labels
     """
-    logmel_path = os.path.join("data", "features", "LOGMEL", "EMODB_LOGMEL_128", f"{dataset_name}.npy")
-    hubert_path = os.path.join("data", "features", "HUBERT", "EMODB_HUBERT", f"{dataset_name}.npy")
+    logmel_path = os.path.join("data", "features", "LOGMEL", f"{dataset_name}_LOGMEL_128", f"{dataset_name}.npy")
+    hubert_path = os.path.join("data", "features", "HUBERT", f"{dataset_name}_HUBERT", f"{dataset_name}.npy")
 
     print(f"Loading LogMel features from: {logmel_path}")
     print(f"Loading HuBERT features from: {hubert_path}")
@@ -175,20 +180,28 @@ def load_fused_tensorflow_dataset(dataset_name):
     assert len(x_logmel) == len(x_hubert)
     assert np.array_equal(y_logmel, y_hubert)
 
-    # ⚠️ Pad each feature set separately to the same time dimension
+    # ⚠️ Pad LogMel features to the same time dimension
     x_logmel = pad_sequences(x_logmel, padding="post", dtype="float32")
-    x_hubert = pad_sequences(x_hubert, padding="post", dtype="float32")
-
-    # ⚠️ Ensure same time steps
-    min_timesteps = min(x_logmel.shape[1], x_hubert.shape[1])
-    x_logmel = x_logmel[:, :min_timesteps, :]
-    x_hubert = x_hubert[:, :min_timesteps, :]
-
+    
+    # HuBERT features are already in the correct format (samples, features)
+    # No need to pad them
+    
     print(f"LogMel shape: {x_logmel.shape}")
     print(f"HuBERT shape: {x_hubert.shape}")
 
+    # ✅ For fusion, we need to reshape HuBERT to match LogMel's time dimension
+    # We'll repeat the HuBERT features along the time dimension
+    # Create a new array with shape (samples, time_steps, hubert_features)
+    x_hubert_reshaped = np.zeros((x_logmel.shape[0], x_logmel.shape[1], x_hubert.shape[1]))
+    
+    # Fill the array with HuBERT features
+    for i in range(x_logmel.shape[0]):
+        x_hubert_reshaped[i, :, :] = x_hubert[i, :]
+    
+    print(f"Reshaped HuBERT shape: {x_hubert_reshaped.shape}")
+
     # ✅ Concatenate along feature dimension
-    x_fused = np.concatenate([x_logmel, x_hubert], axis=-1)
+    x_fused = np.concatenate([x_logmel, x_hubert_reshaped], axis=-1)
     print(f"Fused shape: {x_fused.shape}")
 
     return x_fused, y_logmel
@@ -244,28 +257,19 @@ def convert_to_npy(input_dir, output_path):
                 
                 # Handle HuBERT features differently
                 if is_hubert:
-                    # HuBERT features have shape [sequence_length, hidden_size]
-                    # We need to ensure consistent shape for all samples
-                    # Option 1: Take mean across time dimension
-                    feat = np.mean(feat, axis=0)
+                    # HuBERT features have shape [1, sequence_length, hidden_size]
+                    # Take mean across sequence dimension (axis=1) to get [1, hidden_size]
+                    feat = np.mean(feat, axis=1)
+                    # Remove the batch dimension to get [hidden_size]
+                    feat = feat.squeeze(0)
                 
                 data.append(feat)
                 labels.append(label_index)
     
     # Convert to numpy arrays
     if is_hubert:
-        # For HuBERT, we need to handle potential shape inconsistencies
-        # First, check if all features have the same shape
-        shapes = [feat.shape for feat in data]
-        unique_shapes = set(shapes)
-        
-        if len(unique_shapes) > 1:
-            print(f"⚠️ Warning: HuBERT features have inconsistent shapes: {unique_shapes}")
-            print("⚠️ Using object dtype to handle variable shapes")
-            data = np.array(data, dtype=object)
-        else:
-            # All features have the same shape, can use regular array
-            data = np.array(data)
+        # For HuBERT, all features should now have shape (768,)
+        data = np.array(data)
     else:
         # For other features, use object dtype to handle variable lengths
         data = np.array(data, dtype=object)

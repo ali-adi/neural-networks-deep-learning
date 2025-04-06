@@ -64,21 +64,51 @@ import shutil
 
 # Suppress warnings and TensorFlow logs for clean CLI experience
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
 import warnings
 warnings.filterwarnings("ignore")
 
 import tensorflow as tf
+
+# Enable Metal for Apple Silicon or CUDA for NVIDIA GPUs
+if tf.test.is_built_with_cuda():
+    os.environ['DEVICE'] = 'cuda'
+else:
+    os.environ['DEVICE'] = 'metal'
+
+print("\n🖥️  Device Configuration:")
+
+# Try to enable GPU (either Metal or CUDA)
+try:
+    # List available devices
+    physical_devices = tf.config.list_physical_devices()
+    print("   Available physical devices:", [device.name for device in physical_devices])
+    
+    # Try to create a simple operation on GPU
+    with tf.device('/device:GPU:0'):
+        # Test if GPU is working
+        test_tensor = tf.zeros((1, 1))
+        if tf.test.is_built_with_cuda():
+            print("   ✅ CUDA GPU is available and configured")
+            print("   🚀 Using CUDA GPU for computation")
+        else:
+            print("   ✅ Metal GPU is available and configured")
+            print("   📱 Using Metal GPU for computation")
+except Exception as e:
+    print(f"   ⚠️ Could not configure GPU: {e}")
+    print("   ℹ️ Falling back to CPU")
+
 from src.models.model import SpeechEmotionModel
 from tensorflow.keras.utils import to_categorical
 from src.data_processing.load_dataset import load_fused_tensorflow_dataset
 
 # Label sets for supported datasets
 EMODB_LABELS = ("angry","boredom","disgust","fear","happy","neutral","sad")
-RAVDE_LABELS = ("angry","calm","disgust","fear","happy","neutral","sad","surprise")
+RAVDESS_LABELS = ("calm","angry","disgust","fear","happy","neutral","sad","surprised")
 
 LABEL_DICT = {
     "EMODB": EMODB_LABELS,
-    "RAVDE": RAVDE_LABELS,
+    "RAVDESS": RAVDESS_LABELS,
 }
 
 def load_data_by_type(args):
@@ -135,8 +165,13 @@ def main():
 
     x_source, y_source = load_data_by_type(args)
 
-
-    y_source = to_categorical(y_source, num_classes=len(LABEL_DICT[args.data]))
+    # Get the maximum label index in the data
+    max_label = np.max(y_source)
+    num_classes = max_label + 1
+    print(f"📊 Data contains labels from 0 to {max_label}, using {num_classes} classes for one-hot encoding")
+    
+    # One-hot encode the labels
+    y_source = to_categorical(y_source, num_classes=num_classes)
     print(f"📊 Loaded {x_source.shape[0]} samples for training/testing.")
 
     args.model_path = os.path.join(args.model_path, args.feature_type.upper())
@@ -157,9 +192,13 @@ def main():
     for arg in vars(args):
         print(f"   {arg}: {getattr(args, arg)}")
 
-    devices = tf.config.list_physical_devices()
-    selected_device = next((d for d in devices if 'GPU' in d.device_type), devices[0])
-    print(f"\n🖥️ Selected Device: {selected_device}\n")
+    # Configure device for training
+    try:
+        with tf.device('/device:GPU:0'):
+            tf.zeros((1, 1))
+            print("\n💻 Using Metal GPU for training")
+    except:
+        print("\n💻 Using CPU for training")
 
     class_labels = LABEL_DICT[args.data]
     input_shape = x_source.shape[1:]
