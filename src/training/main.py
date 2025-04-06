@@ -68,15 +68,16 @@ from sklearn.metrics import confusion_matrix, classification_report
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import warnings
+
 warnings.filterwarnings("ignore")
 
 import tensorflow as tf
 
 # Enable Metal for Apple Silicon or CUDA for NVIDIA GPUs
 if tf.test.is_built_with_cuda():
-    os.environ['DEVICE'] = 'cuda'
+    os.environ["DEVICE"] = "cuda"
 else:
-    os.environ['DEVICE'] = 'metal'
+    os.environ["DEVICE"] = "metal"
 
 print("\n🖥️  Device Configuration:")
 
@@ -84,10 +85,12 @@ print("\n🖥️  Device Configuration:")
 try:
     # List available devices
     physical_devices = tf.config.list_physical_devices()
-    print("   Available physical devices:", [device.name for device in physical_devices])
-    
+    print(
+        "   Available physical devices:", [device.name for device in physical_devices]
+    )
+
     # Try to create a simple operation on GPU
-    with tf.device('/device:GPU:0'):
+    with tf.device("/device:GPU:0"):
         # Test if GPU is working
         test_tensor = tf.zeros((1, 1))
         if tf.test.is_built_with_cuda():
@@ -105,8 +108,17 @@ from tensorflow.keras.utils import to_categorical
 from src.data_processing.load_dataset import load_fused_tensorflow_dataset
 
 # Label sets for supported datasets
-EMODB_LABELS = ("angry","boredom","disgust","fear","happy","neutral","sad")
-RAVDESS_LABELS = ("calm","angry","disgust","fear","happy","neutral","sad","surprised")
+EMODB_LABELS = ("angry", "boredom", "disgust", "fear", "happy", "neutral", "sad")
+RAVDESS_LABELS = (
+    "calm",
+    "angry",
+    "disgust",
+    "fear",
+    "happy",
+    "neutral",
+    "sad",
+    "surprised",
+)
 
 LABEL_DICT = {
     "EMODB": EMODB_LABELS,
@@ -135,57 +147,167 @@ EMOTION_MAPPING = {
         "happy": ["happy"],
         "neutral": ["neutral"],
         "sad": ["sad"],
-        "surprised": ["fear"]  # Map surprised to fear (closest match)
-    }
+        "surprised": ["fear"],  # Map surprised to fear (closest match)
+    },
 }
 
+
 def load_data_by_type(args):
-    if args.feature_type == 'FUSION':
+    if args.feature_type == "FUSION":
         x_source, y_source = load_fused_tensorflow_dataset(args.data)
     else:
-        if args.feature_type == 'MFCC':
-            data_path = os.path.join("data", "features", "MFCC", "EMODB_MFCC_96", f"{args.data}.npy")
-        elif args.feature_type == 'LOGMEL':
-            data_path = os.path.join("data", "features", "LOGMEL", "EMODB_LOGMEL_128", f"{args.data}.npy")
-        elif args.feature_type == 'HUBERT':
-            data_path = os.path.join("data", "features", "HUBERT", "EMODB_HUBERT", f"{args.data}.npy")
-        else:
-            raise ValueError("Unsupported feature type. Must be MFCC, LOGMEL, HUBERT, or FUSION.")
+        feature_type_map = {
+            "MFCC": f"{args.data}_MFCC_96",
+            "LOGMEL": f"{args.data}_LOGMEL_128",
+            "HUBERT": f"{args.data}_HUBERT",
+        }
+
+        if args.feature_type not in feature_type_map:
+            raise ValueError(
+                "Unsupported feature type. Must be MFCC, LOGMEL, HUBERT, or FUSION."
+            )
+
+        dir_name = feature_type_map[args.feature_type]
+        data_path = os.path.join(
+            "data", "features", args.feature_type, dir_name, f"{args.data}.npy"
+        )
 
         print(f"\U0001F4E6 Data source: {data_path}")
         loaded_data = np.load(data_path, allow_pickle=True).item()
-        if not isinstance(loaded_data, dict) or "x" not in loaded_data or "y" not in loaded_data:
+        if (
+            not isinstance(loaded_data, dict)
+            or "x" not in loaded_data
+            or "y" not in loaded_data
+        ):
             raise ValueError(f"Invalid data format in {data_path}")
         x_source = loaded_data["x"]
         y_source = loaded_data["y"]
+
+        # Special handling for HUBERT features to ensure they have the correct shape
+        if (
+            args.feature_type == "HUBERT"
+            and len(x_source.shape) == 1
+            and x_source.dtype == object
+        ):
+            # For HUBERT, if it's a 1D object array of features, we can use it directly
+            # The model will handle reshaping in the create_model function
+            print(f"✅ Using HUBERT features as 1D embeddings")
+
     return x_source, y_source
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Train or test a temporal conv-based speech emotion model.")
-    parser.add_argument('--mode', type=str, default="train", choices=["train", "test", "test-cross-corpus", "train-lmmd"], help="Run mode: train, test, test-cross-corpus, or train-lmmd.")
-    parser.add_argument('--model_path', type=str, default='./saved_models/', help="Root directory to save model checkpoints.")
-    parser.add_argument('--result_path', type=str, default='./results/', help="Root directory to save evaluation results.")
-    parser.add_argument('--test_path', type=str, default='./test_models/EMODB', help="Path to load test model weights or folder containing .h5 files.")
-    parser.add_argument('--data', type=str, default='EMODB', help="Dataset name: EMODB or RAVDESS")
-    parser.add_argument('--feature_type', type=str, default='FUSION', choices=['MFCC', 'LOGMEL', 'HUBERT', 'FUSION'], help="Type of audio feature used.")
-    parser.add_argument('--lr', type=float, default=0.0003, help="Lower learning rate for finer convergence.")
-    parser.add_argument('--beta1', type=float, default=0.93, help="Adam beta1.")
-    parser.add_argument('--beta2', type=float, default=0.98, help="Adam beta2.")
-    parser.add_argument('--batch_size', type=int, default=32, help="Smaller batch size to help generalization.")
-    parser.add_argument('--epoch', type=int, default=300, help="Number of epochs for training.")
-    parser.add_argument('--dropout', type=float, default=0.4, help="Dropout rate to reduce overfitting.")
-    parser.add_argument('--random_seed', type=int, default=46, help="Seed for reproducibility.")
-    parser.add_argument('--activation', type=str, default='relu', help="Activation function.")
-    parser.add_argument('--filter_size', type=int, default=128, help="Number of filters for richer features")
-    parser.add_argument('--dilation_size', type=int, default=8, help="Maximum power-of-two dilation size.")
-    parser.add_argument('--kernel_size', type=int, default=3, help="Kernel size for convolution layers.")
-    parser.add_argument('--stack_size', type=int, default=3, help="Number of temporal blocks to stack.")
-    parser.add_argument('--split_fold', type=int, default=10, help="Number of folds for cross-validation for better stability.")
-    parser.add_argument('--gpu', type=str, default='0', help="GPU device index to use.")
-    parser.add_argument('--visualize', action='store_true', help="Whether to visualize confusion matrix (requires matplotlib)")
-    parser.add_argument('--use_lmmd', action='store_true', help="Whether to use LMMD loss for domain adaptation")
-    parser.add_argument('--lmmd_weight', type=float, default=0.5, help="Weight for LMMD loss in domain adaptation")
-    parser.add_argument('--target_data', type=str, default=None, help="Target domain dataset for domain adaptation (if different from --data)")
+    parser = argparse.ArgumentParser(
+        description="Train or test a temporal conv-based speech emotion model."
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="train",
+        choices=["train", "test", "test-cross-corpus", "train-lmmd"],
+        help="Run mode: train, test, test-cross-corpus, or train-lmmd.",
+    )
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        default="./saved_models/",
+        help="Root directory to save model checkpoints.",
+    )
+    parser.add_argument(
+        "--result_path",
+        type=str,
+        default="./results/",
+        help="Root directory to save evaluation results.",
+    )
+    parser.add_argument(
+        "--test_path",
+        type=str,
+        default="./test_models/EMODB",
+        help="Path to load test model weights or folder containing .h5 files.",
+    )
+    parser.add_argument(
+        "--data", type=str, default="EMODB", help="Dataset name: EMODB or RAVDESS"
+    )
+    parser.add_argument(
+        "--feature_type",
+        type=str,
+        default="FUSION",
+        choices=["MFCC", "LOGMEL", "HUBERT", "FUSION"],
+        help="Type of audio feature used.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=0.0003,
+        help="Lower learning rate for finer convergence.",
+    )
+    parser.add_argument("--beta1", type=float, default=0.93, help="Adam beta1.")
+    parser.add_argument("--beta2", type=float, default=0.98, help="Adam beta2.")
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Smaller batch size to help generalization.",
+    )
+    parser.add_argument(
+        "--epoch", type=int, default=300, help="Number of epochs for training."
+    )
+    parser.add_argument(
+        "--dropout", type=float, default=0.4, help="Dropout rate to reduce overfitting."
+    )
+    parser.add_argument(
+        "--random_seed", type=int, default=46, help="Seed for reproducibility."
+    )
+    parser.add_argument(
+        "--activation", type=str, default="relu", help="Activation function."
+    )
+    parser.add_argument(
+        "--filter_size",
+        type=int,
+        default=128,
+        help="Number of filters for richer features",
+    )
+    parser.add_argument(
+        "--dilation_size",
+        type=int,
+        default=8,
+        help="Maximum power-of-two dilation size.",
+    )
+    parser.add_argument(
+        "--kernel_size", type=int, default=3, help="Kernel size for convolution layers."
+    )
+    parser.add_argument(
+        "--stack_size", type=int, default=3, help="Number of temporal blocks to stack."
+    )
+    parser.add_argument(
+        "--split_fold",
+        type=int,
+        default=10,
+        help="Number of folds for cross-validation for better stability.",
+    )
+    parser.add_argument("--gpu", type=str, default="0", help="GPU device index to use.")
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Whether to visualize confusion matrix (requires matplotlib)",
+    )
+    parser.add_argument(
+        "--use_lmmd",
+        action="store_true",
+        help="Whether to use LMMD loss for domain adaptation",
+    )
+    parser.add_argument(
+        "--lmmd_weight",
+        type=float,
+        default=0.5,
+        help="Weight for LMMD loss in domain adaptation",
+    )
+    parser.add_argument(
+        "--target_data",
+        type=str,
+        default=None,
+        help="Target domain dataset for domain adaptation (if different from --data)",
+    )
 
     args = parser.parse_args()
 
@@ -197,12 +319,43 @@ def main():
 
     x_source, y_source = load_data_by_type(args)
 
-    # Get the maximum label index in the data
-    max_label = np.max(y_source)
-    num_classes = max_label + 1
-    print(f"📊 Data contains labels from 0 to {max_label}, using {num_classes} classes for one-hot encoding")
-    
-    # One-hot encode the labels
+    # CRITICAL FIX: Remap labels to consecutive integers for each dataset
+    if args.data == "EMODB":
+        # For EMODB, map to 0-6
+        num_classes = 7
+        # Define a mapping table from existing indices to sequential ones
+        # EMODB labels can be [0,1,2,3,4,5,6] but could have other values from LABEL_MAP
+        unique_labels = np.unique(y_source)
+        print(f"🔄 Original unique labels found: {unique_labels}")
+
+        # Create a mapping dictionary where each original label maps to a position from 0-6
+        label_mapping = {label: idx for idx, label in enumerate(sorted(unique_labels))}
+        print(f"🔄 Remapping labels to: {label_mapping}")
+
+        # Apply the mapping to all labels
+        y_source_remapped = np.array([label_mapping[label] for label in y_source])
+        y_source = y_source_remapped
+
+    elif args.data == "RAVDESS":
+        # For RAVDESS, map to 0-7
+        num_classes = 8
+        unique_labels = np.unique(y_source)
+        print(f"🔄 Original unique labels found: {unique_labels}")
+
+        # Create a mapping dictionary for RAVDESS (could have labels like [0,2,4,5,6,7,8,9])
+        label_mapping = {label: idx for idx, label in enumerate(sorted(unique_labels))}
+        print(f"🔄 Remapping labels to: {label_mapping}")
+
+        # Apply the mapping
+        y_source_remapped = np.array([label_mapping[label] for label in y_source])
+        y_source = y_source_remapped
+    else:
+        # For other datasets, just use the number of unique labels
+        num_classes = len(np.unique(y_source))
+
+    print(f"📊 Using {num_classes} classes for one-hot encoding")
+
+    # One-hot encode the labels with the remapped values
     y_source = to_categorical(y_source, num_classes=num_classes)
     print(f"📊 Loaded {x_source.shape[0]} samples for training/testing.")
 
@@ -226,7 +379,7 @@ def main():
 
     # Configure device for training
     try:
-        with tf.device('/device:GPU:0'):
+        with tf.device("/device:GPU:0"):
             tf.zeros((1, 1))
             print("\n💻 Using Metal GPU for training")
     except:
@@ -237,7 +390,9 @@ def main():
     print(f"✅ Data loaded successfully! Shape: {x_source.shape}")
 
     print("\n🧠 Initializing model...\n")
-    model = SpeechEmotionModel(input_shape=input_shape, class_labels=class_labels, args=args)
+    model = SpeechEmotionModel(
+        input_shape=input_shape, class_labels=class_labels, args=args
+    )
 
     if args.mode == "train":
         print("🚀 Starting training...\n")
@@ -247,94 +402,121 @@ def main():
     elif args.mode == "test":
         print("🧪 Starting testing...\n")
         if os.path.isdir(args.test_path):
-            h5_files = [os.path.join(args.test_path, f) for f in os.listdir(args.test_path) if f.endswith(".h5")]
+            h5_files = [
+                os.path.join(args.test_path, f)
+                for f in os.listdir(args.test_path)
+                if f.endswith(".h5")
+            ]
             if not h5_files:
                 raise FileNotFoundError(f"No .h5 files found in {args.test_path}")
             args.test_path = max(h5_files, key=os.path.getmtime)
             print(f"📌 Latest model found: {args.test_path}")
-
 
         model.evaluate_test(x_source, y_source, path=args.test_path)
         print("\n✅ Testing complete!\n")
 
     elif args.mode == "test-cross-corpus":
         print("🧪 Starting cross-corpus validation...\n")
-        
+
         # Automatically determine the test dataset based on the source dataset
         if args.data == "EMODB":
             args.test_data = "RAVDESS"
         elif args.data == "RAVDESS":
             args.test_data = "EMODB"
         else:
-            raise ValueError(f"Unsupported dataset: {args.data}. Must be either EMODB or RAVDESS.")
-            
-        print(f"\n🔄 Cross-corpus validation: Training on {args.data}, testing on {args.test_data}")
-        
+            raise ValueError(
+                f"Unsupported dataset: {args.data}. Must be either EMODB or RAVDESS."
+            )
+
+        print(
+            f"\n🔄 Cross-corpus validation: Training on {args.data}, testing on {args.test_data}"
+        )
+
         # Load the SOURCE dataset (what the model was trained on)
         print(f"📝 SOURCE dataset: {args.data} (training data)")
         source_class_labels = LABEL_DICT[args.data]
-        
+
         # Load the TARGET dataset (what we'll test on)
         print(f"📝 TARGET dataset: {args.test_data} (testing data)")
         target_class_labels = LABEL_DICT[args.test_data]
-        
+
         # Load target dataset for testing
-        x_target, y_target = load_data_by_type(argparse.Namespace(**{**vars(args), "data": args.test_data}))
-        
+        x_target, y_target = load_data_by_type(
+            argparse.Namespace(**{**vars(args), "data": args.test_data})
+        )
+
         # Determine emotion mapping key
         mapping_key = f"{args.data}_TO_{args.test_data}"
         if mapping_key not in EMOTION_MAPPING:
             raise ValueError(f"No emotion mapping defined for {mapping_key}")
-        
+
         emotion_map = EMOTION_MAPPING[mapping_key]
         print("\n🗺️ Emotion mapping:")
         for source, targets in emotion_map.items():
             print(f"   {source} → {targets}")
-            
+
         # Map indices to emotion names for source dataset
-        source_idx_to_emotion = {i: emotion for i, emotion in enumerate(source_class_labels)}
-        
+        source_idx_to_emotion = {
+            i: emotion for i, emotion in enumerate(source_class_labels)
+        }
+
         # Map emotion names to indices for target dataset
-        target_emotion_to_idx = {emotion: i for i, emotion in enumerate(target_class_labels)}
-        
+        target_emotion_to_idx = {
+            emotion: i for i, emotion in enumerate(target_class_labels)
+        }
+
         # Create mapping visualization
         print("\n🔀 Cross-corpus emotion mappings:")
         mapping_rows = []
         for source_idx, source_emotion in source_idx_to_emotion.items():
             target_emotions = emotion_map.get(source_emotion, [])
-            target_emotion_str = ", ".join(target_emotions) if target_emotions else "N/A"
-            target_indices = [target_emotion_to_idx.get(e, "N/A") for e in target_emotions]
-            target_idx_str = ", ".join(str(idx) for idx in target_indices) if target_indices else "N/A"
-            mapping_rows.append(f"   {source_idx} ({source_emotion}) → {target_idx_str} ({target_emotion_str})")
-        
+            target_emotion_str = (
+                ", ".join(target_emotions) if target_emotions else "N/A"
+            )
+            target_indices = [
+                target_emotion_to_idx.get(e, "N/A") for e in target_emotions
+            ]
+            target_idx_str = (
+                ", ".join(str(idx) for idx in target_indices)
+                if target_indices
+                else "N/A"
+            )
+            mapping_rows.append(
+                f"   {source_idx} ({source_emotion}) → {target_idx_str} ({target_emotion_str})"
+            )
+
         # Sort and print for readability
         mapping_rows.sort()
         for row in mapping_rows:
             print(row)
-        
+
         # Map numerical labels
         print("\n🔄 Mapping numerical labels...")
-        y_source_emotions = np.argmax(y_target, axis=1) if len(y_target.shape) > 1 else y_target
-        
+        y_source_emotions = (
+            np.argmax(y_target, axis=1) if len(y_target.shape) > 1 else y_target
+        )
+
         # Create a lookup for emotion names based on indices in target dataset
-        target_idx_to_emotion = {i: emotion for i, emotion in enumerate(target_class_labels)}
-        
+        target_idx_to_emotion = {
+            i: emotion for i, emotion in enumerate(target_class_labels)
+        }
+
         # Apply mapping and count valid/invalid mappings
         valid_count = 0
         invalid_count = 0
         invalid_indices = []
-        
+
         # We'll create one-hot encoded vectors for multiple mappings
         y_mapped_multi = np.zeros((len(y_source_emotions), len(target_class_labels)))
-        
+
         for i, label_idx in enumerate(y_source_emotions):
             # Get the emotion name for this index in the target dataset
             if label_idx < len(target_class_labels):
                 target_emotion = target_idx_to_emotion[label_idx]
-                
+
                 # Find all source emotions that map to this target emotion
                 mappings_found = False
-                
+
                 # Check each source emotion and its mappings
                 for source_emotion, mapped_emotions in emotion_map.items():
                     if target_emotion in mapped_emotions:
@@ -344,7 +526,7 @@ def main():
                             mapped_idx = target_emotion_to_idx[source_emotion]
                             y_mapped_multi[i, mapped_idx] = 1
                             mappings_found = True
-                
+
                 if mappings_found:
                     valid_count += 1
                 else:
@@ -353,17 +535,21 @@ def main():
             else:
                 invalid_count += 1
                 invalid_indices.append(i)
-        
+
         print(f"   ✅ {valid_count} samples mapped successfully")
         if invalid_count > 0:
-            print(f"   ⚠️ {invalid_count} samples had no valid mapping and will be excluded")
-            
+            print(
+                f"   ⚠️ {invalid_count} samples had no valid mapping and will be excluded"
+            )
+
             # Remove samples with invalid mappings
             if invalid_count > 0:
-                valid_indices = [i for i in range(len(y_mapped_multi)) if i not in invalid_indices]
+                valid_indices = [
+                    i for i in range(len(y_mapped_multi)) if i not in invalid_indices
+                ]
                 x_target = x_target[valid_indices]
                 y_mapped_multi = y_mapped_multi[valid_indices]
-        
+
         # Convert multi-hot to single class for each sample (take the max probability)
         y_mapped = np.zeros(len(y_mapped_multi), dtype=int)
         for i in range(len(y_mapped_multi)):
@@ -371,222 +557,286 @@ def main():
                 # If there are multiple 1s, choose randomly among them
                 possible_indices = np.where(y_mapped_multi[i] == 1)[0]
                 y_mapped[i] = np.random.choice(possible_indices)
-        
+
         # One-hot encode for the model
         y_target_mapped = to_categorical(y_mapped, num_classes=len(target_class_labels))
-        
+
         print("\n🧠 Initializing model for evaluation...\n")
         model = SpeechEmotionModel(
-            input_shape=x_target.shape[1:], 
-            class_labels=target_class_labels, 
-            args=args
+            input_shape=x_target.shape[1:], class_labels=target_class_labels, args=args
         )
-        
+
         # Generate unique result folder/file name
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         result_filename = f"cross_corpus_{args.data}_to_{args.test_data}_{timestamp}"
-        result_dir = os.path.join(args.result_path, f"CrossCorpus/{args.data}_TO_{args.test_data}")
+        result_dir = os.path.join(
+            args.result_path, f"CrossCorpus/{args.data}_TO_{args.test_data}"
+        )
         os.makedirs(result_dir, exist_ok=True)
-        
-        print(f"\n🚀 Starting cross-corpus validation ({args.data} → {args.test_data})...\n")
+
+        print(
+            f"\n🚀 Starting cross-corpus validation ({args.data} → {args.test_data})...\n"
+        )
         y_pred, accuracy = model.evaluate_test(
-            x_target, 
-            y_target_mapped, 
+            x_target,
+            y_target_mapped,
             path=args.test_path,
             result_filename=result_filename,
-            result_dir=result_dir
+            result_dir=result_dir,
         )
-        
+
         # Optionally visualize confusion matrix
         if args.visualize:
             try:
                 import matplotlib.pyplot as plt
                 import seaborn as sns
-                
+
                 print("\n📊 Generating confusion matrix visualization...")
-                
+
                 # Get the number of unique classes in the predicted data
                 unique_classes = np.unique(np.concatenate([y_mapped, y_pred]))
                 num_unique_classes = len(unique_classes)
-                
+
                 # Determine which labels to use
                 if num_unique_classes != len(target_class_labels):
-                    print(f"⚠️ Using {num_unique_classes} labels for visualization instead of {len(target_class_labels)}")
+                    print(
+                        f"⚠️ Using {num_unique_classes} labels for visualization instead of {len(target_class_labels)}"
+                    )
                     present_classes = sorted(unique_classes)
-                    display_labels = [target_class_labels[i] if i < len(target_class_labels) else f"Class {i}" 
-                                     for i in present_classes]
+                    display_labels = [
+                        (
+                            target_class_labels[i]
+                            if i < len(target_class_labels)
+                            else f"Class {i}"
+                        )
+                        for i in present_classes
+                    ]
                 else:
                     display_labels = target_class_labels
-                
+
                 # Convert y_mapped to emotion names for better visualization
                 y_true = y_mapped
-                
+
                 # Calculate confusion matrix
                 cm = confusion_matrix(y_true, y_pred)
-                cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-                
+                cm_norm = cm.astype("float") / cm.sum(axis=1)[:, np.newaxis]
+
                 # Create figure
                 plt.figure(figsize=(10, 8))
-                sns.heatmap(cm_norm, annot=True, fmt='.2f', cmap='Blues',
-                           xticklabels=display_labels,
-                           yticklabels=display_labels)
-                plt.xlabel('Predicted')
-                plt.ylabel('True')
-                plt.title(f'Cross-Corpus Validation: {args.data} → {args.test_data}\nAccuracy: {accuracy:.2f}')
-                
+                sns.heatmap(
+                    cm_norm,
+                    annot=True,
+                    fmt=".2f",
+                    cmap="Blues",
+                    xticklabels=display_labels,
+                    yticklabels=display_labels,
+                )
+                plt.xlabel("Predicted")
+                plt.ylabel("True")
+                plt.title(
+                    f"Cross-Corpus Validation: {args.data} → {args.test_data}\nAccuracy: {accuracy:.2f}"
+                )
+
                 # Save figure
                 viz_path = os.path.join(model.result_dir, f"{result_filename}_cm.png")
                 plt.savefig(viz_path)
                 print(f"✅ Visualization saved to: {viz_path}")
-                
+
             except ImportError:
-                print("⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'")
-        
+                print(
+                    "⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'"
+                )
+
         print("\n✅ Cross-corpus validation complete!\n")
 
     elif args.mode == "train-lmmd":
         # Domain adaptation training with LMMD
         print("🚀 Starting domain adaptation training with LMMD loss")
-        
+
         # Set the target dataset - if not specified, use the opposite of source
-        target_dataset = args.target_data if args.target_data else ("RAVDESS" if args.data == "EMODB" else "EMODB")
+        target_dataset = (
+            args.target_data
+            if args.target_data
+            else ("RAVDESS" if args.data == "EMODB" else "EMODB")
+        )
         print(f"📊 Source domain: {args.data}")
         print(f"📊 Target domain: {target_dataset}")
-        
+
         # Save the original data args
         source_dataset = args.data
-        
+
         # Load target domain data
         args.data = target_dataset
         x_target, y_target = load_data_by_type(args)
-        
+
         # Restore original args
         args.data = source_dataset
-        
+
         # Check shapes and adjust if needed
         print(f"Source data shape: {x_source.shape}")
         print(f"Target data shape: {x_target.shape}")
-        
+
         # Get labels for both datasets
         source_class_labels = LABEL_DICT[args.data]
         target_class_labels = LABEL_DICT[target_dataset]
-        
+
         print(f"Source classes: {source_class_labels}")
         print(f"Target classes: {target_class_labels}")
-        
+
         # Initialize the model with source domain class labels
-        ser_model = SpeechEmotionModel(input_shape=x_source.shape[1:], class_labels=source_class_labels, args=args)
-        
+        ser_model = SpeechEmotionModel(
+            input_shape=x_source.shape[1:], class_labels=source_class_labels, args=args
+        )
+
         # Train with domain adaptation
         # Initialize LMMD loss by setting the flag
         args.use_lmmd = True
         ser_model.train_with_domain_adaptation(x_source, y_source, x_target, y_target)
-        
+
         print("\n✅ Domain adaptation training complete!")
         print(f"🏆 Best model saved to: {ser_model.best_fold_weight_path}")
-        
+
         # Get classification report
         if ser_model.trained:
             # Evaluate on source validation data
             y_source_pred = ser_model.model.predict(x_source)
             y_source_pred = np.argmax(y_source_pred, axis=1)
-            y_source_true = y_source if len(y_source.shape) == 1 else np.argmax(y_source, axis=1)
-            
-            source_report = classification_report(
-                y_source_true, y_source_pred, 
-                target_names=source_class_labels, 
-                digits=4, zero_division=0
+            y_source_true = (
+                y_source if len(y_source.shape) == 1 else np.argmax(y_source, axis=1)
             )
-            
+
+            source_report = classification_report(
+                y_source_true,
+                y_source_pred,
+                target_names=source_class_labels,
+                digits=4,
+                zero_division=0,
+            )
+
             print("\n📊 Source Domain Classification Report:")
             print(source_report)
-            
+
             # Also evaluate on target data
             y_target_pred = ser_model.model.predict(x_target)
             y_target_pred = np.argmax(y_target_pred, axis=1)
-            y_target_true = y_target if len(y_target.shape) == 1 else np.argmax(y_target, axis=1)
-            
+            y_target_true = (
+                y_target if len(y_target.shape) == 1 else np.argmax(y_target, axis=1)
+            )
+
             # Adjust target class names if needed
             if len(target_class_labels) != max(y_target_true) + 1:
                 target_names = [f"Class {i}" for i in range(max(y_target_true) + 1)]
             else:
                 target_names = target_class_labels
-                
+
             target_report = classification_report(
-                y_target_true, y_target_pred, 
-                target_names=target_names, 
-                digits=4, zero_division=0
+                y_target_true,
+                y_target_pred,
+                target_names=target_names,
+                digits=4,
+                zero_division=0,
             )
-            
+
             print("\n📊 Target Domain Classification Report:")
             print(target_report)
-            
+
         # Generate and save confusion matrix if requested
         if args.visualize:
             try:
                 import matplotlib.pyplot as plt
                 import seaborn as sns
-                
+
                 print("\n📊 Generating confusion matrix visualizations...")
-                
+
                 # Convert labels to appropriate format if they're not already
-                if not 'y_source_true' in locals() or not 'y_source_pred' in locals():
+                if not "y_source_true" in locals() or not "y_source_pred" in locals():
                     # If we haven't evaluated on source data yet, do it now
                     y_source_pred = ser_model.model.predict(x_source)
                     y_source_pred = np.argmax(y_source_pred, axis=1)
-                    y_source_true = y_source if len(y_source.shape) == 1 else np.argmax(y_source, axis=1)
-                
+                    y_source_true = (
+                        y_source
+                        if len(y_source.shape) == 1
+                        else np.argmax(y_source, axis=1)
+                    )
+
                 # Similarly ensure target predictions are available
-                if not 'y_target_true' in locals() or not 'y_target_pred' in locals():
+                if not "y_target_true" in locals() or not "y_target_pred" in locals():
                     y_target_pred = ser_model.model.predict(x_target)
                     y_target_pred = np.argmax(y_target_pred, axis=1)
-                    y_target_true = y_target if len(y_target.shape) == 1 else np.argmax(y_target, axis=1)
-                    
+                    y_target_true = (
+                        y_target
+                        if len(y_target.shape) == 1
+                        else np.argmax(y_target, axis=1)
+                    )
+
                     # Adjust target class names if needed
                     if len(target_class_labels) != max(y_target_true) + 1:
-                        target_names = [f"Class {i}" for i in range(max(y_target_true) + 1)]
+                        target_names = [
+                            f"Class {i}" for i in range(max(y_target_true) + 1)
+                        ]
                     else:
                         target_names = target_class_labels
-                
+
                 # Source domain visualization
                 cm_source = confusion_matrix(y_source_true, y_source_pred)
-                cm_source_norm = cm_source.astype('float') / cm_source.sum(axis=1)[:, np.newaxis]
-                
+                cm_source_norm = (
+                    cm_source.astype("float") / cm_source.sum(axis=1)[:, np.newaxis]
+                )
+
                 plt.figure(figsize=(10, 8))
-                sns.heatmap(cm_source_norm, annot=True, fmt='.2f', cmap='Blues',
-                           xticklabels=source_class_labels,
-                           yticklabels=source_class_labels)
-                plt.xlabel('Predicted')
-                plt.ylabel('True')
-                plt.title(f'Source Domain ({args.data}) Confusion Matrix')
-                
+                sns.heatmap(
+                    cm_source_norm,
+                    annot=True,
+                    fmt=".2f",
+                    cmap="Blues",
+                    xticklabels=source_class_labels,
+                    yticklabels=source_class_labels,
+                )
+                plt.xlabel("Predicted")
+                plt.ylabel("True")
+                plt.title(f"Source Domain ({args.data}) Confusion Matrix")
+
                 # Create results directory if needed
                 os.makedirs(args.result_path, exist_ok=True)
-                source_viz_path = os.path.join(args.result_path, f"lmmd_{args.data}_source_cm.png")
+                source_viz_path = os.path.join(
+                    args.result_path, f"lmmd_{args.data}_source_cm.png"
+                )
                 plt.savefig(source_viz_path)
-                
+
                 # Target domain visualization
                 cm_target = confusion_matrix(y_target_true, y_target_pred)
-                cm_target_norm = cm_target.astype('float') / cm_target.sum(axis=1)[:, np.newaxis]
-                
+                cm_target_norm = (
+                    cm_target.astype("float") / cm_target.sum(axis=1)[:, np.newaxis]
+                )
+
                 plt.figure(figsize=(10, 8))
-                sns.heatmap(cm_target_norm, annot=True, fmt='.2f', cmap='Blues',
-                           xticklabels=target_names,
-                           yticklabels=target_names)
-                plt.xlabel('Predicted')
-                plt.ylabel('True')
-                plt.title(f'Target Domain ({target_dataset}) Confusion Matrix')
-                
-                target_viz_path = os.path.join(args.result_path, f"lmmd_{target_dataset}_target_cm.png")
+                sns.heatmap(
+                    cm_target_norm,
+                    annot=True,
+                    fmt=".2f",
+                    cmap="Blues",
+                    xticklabels=target_names,
+                    yticklabels=target_names,
+                )
+                plt.xlabel("Predicted")
+                plt.ylabel("True")
+                plt.title(f"Target Domain ({target_dataset}) Confusion Matrix")
+
+                target_viz_path = os.path.join(
+                    args.result_path, f"lmmd_{target_dataset}_target_cm.png"
+                )
                 plt.savefig(target_viz_path)
-                
+
                 print(f"✅ Visualizations saved to: {args.result_path}")
-                
+
             except ImportError:
-                print("⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'")
+                print(
+                    "⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'"
+                )
 
     else:
         print(f"⚠️ Invalid mode: {args.mode}")
+
 
 if __name__ == "__main__":
     main()

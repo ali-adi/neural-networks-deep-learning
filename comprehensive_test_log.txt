@@ -1,9 +1,0 @@
-[2025-04-06 20:57:31] Starting comprehensive testing suite. Total tests to run: 34
-[2025-04-06 20:57:31] Results will be saved in standard project directories
-[2025-04-06 20:57:31] Logs and summary will be saved in: comprehensive_results_2025-04-06_20-57-31
-[2025-04-06 20:57:31] === PHASE 0: DATA PROCESSING ===
-[2025-04-06 20:57:31] Running full data processing pipeline for EMODB...
-[2025-04-06 20:57:31] COMMAND: python -m src.data_processing.run_data_processing --dataset EMODB
-[2025-04-06 20:58:37] Progress: 1/34 completed
-[2025-04-06 20:58:37] Running full data processing pipeline for RAVDESS...
-[2025-04-06 20:58:37] COMMAND: python -m src.data_processing.run_data_processing --dataset RAVDESS

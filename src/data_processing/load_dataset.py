@@ -53,24 +53,24 @@ from glob import glob
 # ====================
 LABEL_MAP = {
     # EMODB labels
-    'angry': 0,
-    'boredom': 1,
-    'disgust': 2,
-    'fear': 3,
-    'happy': 4,
-    'neutral': 5,
-    'sad': 6,
-    
+    "angry": 0,
+    "boredom": 1,
+    "disgust": 2,
+    "fear": 3,
+    "happy": 4,
+    "neutral": 5,
+    "sad": 6,
     # RAVDESS labels - using the actual indices from the data
-    'calm': 0,
-    'angry': 2,
-    'disgust': 4,
-    'fear': 5,
-    'happy': 6,
-    'neutral': 7,
-    'sad': 8,
-    'surprised': 9
+    "calm": 0,
+    "angry": 2,
+    "disgust": 4,
+    "fear": 5,
+    "happy": 6,
+    "neutral": 7,
+    "sad": 8,
+    "surprised": 9,
 }
+
 
 # ==============================
 # 📂 PyTorch Dataset Definition
@@ -107,6 +107,7 @@ class EmotionFeatureDataset(Dataset):
         features = np.load(feature_path)
         return torch.tensor(features, dtype=torch.float32), label
 
+
 # ==============================
 # 🧩 Sequence Padding for Batches
 # ==============================
@@ -116,10 +117,13 @@ def collate_fn(batch):
     labels = torch.tensor(labels, dtype=torch.long)
     return padded_features, labels
 
+
 # ===================================
 # 🧪 Load PyTorch Dataset for Training
 # ===================================
-def load_feature_dataset(data_directory, batch_size=32, val_split=0.2, shuffle=True, seed=42):
+def load_feature_dataset(
+    data_directory, batch_size=32, val_split=0.2, shuffle=True, seed=42
+):
     """
     Loads a PyTorch DataLoader from .npy feature files.
 
@@ -142,15 +146,22 @@ def load_feature_dataset(data_directory, batch_size=32, val_split=0.2, shuffle=T
 
     if shuffle:
         generator = torch.Generator().manual_seed(seed)
-        train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=generator)
+        train_dataset, val_dataset = random_split(
+            dataset, [train_size, val_size], generator=generator
+        )
     else:
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    )
 
     print(f"✅ DataLoaders ready. Batch size: {batch_size}\n")
     return train_loader, val_loader
+
 
 # ======================================
 # 🔗 Load and Fuse HuBERT + Logmel Arrays
@@ -165,8 +176,16 @@ def load_fused_tensorflow_dataset(dataset_name):
     Returns:
         Tuple[np.ndarray, np.ndarray]: x_fused, y_labels
     """
-    logmel_path = os.path.join("data", "features", "LOGMEL", f"{dataset_name}_LOGMEL_128", f"{dataset_name}.npy")
-    hubert_path = os.path.join("data", "features", "HUBERT", f"{dataset_name}_HUBERT", f"{dataset_name}.npy")
+    logmel_path = os.path.join(
+        "data",
+        "features",
+        "LOGMEL",
+        f"{dataset_name}_LOGMEL_128",
+        f"{dataset_name}.npy",
+    )
+    hubert_path = os.path.join(
+        "data", "features", "HUBERT", f"{dataset_name}_HUBERT", f"{dataset_name}.npy"
+    )
 
     print(f"Loading LogMel features from: {logmel_path}")
     print(f"Loading HuBERT features from: {hubert_path}")
@@ -174,30 +193,32 @@ def load_fused_tensorflow_dataset(dataset_name):
     logmel = np.load(logmel_path, allow_pickle=True).item()
     hubert = np.load(hubert_path, allow_pickle=True).item()
 
-    x_logmel, y_logmel = logmel['x'], logmel['y']
-    x_hubert, y_hubert = hubert['x'], hubert['y']
+    x_logmel, y_logmel = logmel["x"], logmel["y"]
+    x_hubert, y_hubert = hubert["x"], hubert["y"]
 
     assert len(x_logmel) == len(x_hubert)
     assert np.array_equal(y_logmel, y_hubert)
 
     # ⚠️ Pad LogMel features to the same time dimension
     x_logmel = pad_sequences(x_logmel, padding="post", dtype="float32")
-    
+
     # HuBERT features are already in the correct format (samples, features)
     # No need to pad them
-    
+
     print(f"LogMel shape: {x_logmel.shape}")
     print(f"HuBERT shape: {x_hubert.shape}")
 
     # ✅ For fusion, we need to reshape HuBERT to match LogMel's time dimension
     # We'll repeat the HuBERT features along the time dimension
     # Create a new array with shape (samples, time_steps, hubert_features)
-    x_hubert_reshaped = np.zeros((x_logmel.shape[0], x_logmel.shape[1], x_hubert.shape[1]))
-    
+    x_hubert_reshaped = np.zeros(
+        (x_logmel.shape[0], x_logmel.shape[1], x_hubert.shape[1])
+    )
+
     # Fill the array with HuBERT features
     for i in range(x_logmel.shape[0]):
         x_hubert_reshaped[i, :, :] = x_hubert[i, :]
-    
+
     print(f"Reshaped HuBERT shape: {x_hubert_reshaped.shape}")
 
     # ✅ Concatenate along feature dimension
@@ -205,6 +226,7 @@ def load_fused_tensorflow_dataset(dataset_name):
     print(f"Fused shape: {x_fused.shape}")
 
     return x_fused, y_logmel
+
 
 # ===============================
 # 🚀 Auto Test All Feature Loaders
@@ -223,38 +245,43 @@ def load_all_feature_datasets(dataset_name="EMODB", batch_size=64):
 
     return mfcc_train, mfcc_val, x_fused, y_fused
 
+
 # 🔄 CONVERT FOLDER TO .NPY FORMAT FOR TENSORFLOW (SINGLE FILE)
 def convert_to_npy(input_dir, output_path):
     """
     Convert extracted features from a directory structure to a single .npy file.
-    
+
     Args:
         input_dir (str): Directory containing emotion-labeled feature folders
         output_path (str): Path to save the .npy file
     """
-    print(f"📤 Converting from folder '{input_dir}' to single .npy file → {output_path}")
-    
+    print(
+        f"📤 Converting from folder '{input_dir}' to single .npy file → {output_path}"
+    )
+
     data = []
     labels = []
-    
+
     # Get all emotion folders
-    emotion_folders = [f for f in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, f))]
-    
+    emotion_folders = [
+        f for f in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, f))
+    ]
+
     # Check if this is HuBERT features (which have a different shape)
     is_hubert = "HUBERT" in input_dir
-    
+
     for emotion_folder in emotion_folders:
         label_dir = os.path.join(input_dir, emotion_folder)
         label_index = LABEL_MAP.get(emotion_folder.lower(), -1)
-        
+
         if label_index == -1:
             print(f"⚠️ Warning: Unknown emotion label '{emotion_folder}', skipping...")
             continue
-        
+
         for file in os.listdir(label_dir):
             if file.endswith(".npy"):
                 feat = np.load(os.path.join(label_dir, file))
-                
+
                 # Handle HuBERT features differently
                 if is_hubert:
                     # HuBERT features have shape [1, sequence_length, hidden_size]
@@ -262,10 +289,10 @@ def convert_to_npy(input_dir, output_path):
                     feat = np.mean(feat, axis=1)
                     # Remove the batch dimension to get [hidden_size]
                     feat = feat.squeeze(0)
-                
+
                 data.append(feat)
                 labels.append(label_index)
-    
+
     # Convert to numpy arrays
     if is_hubert:
         # For HuBERT, all features should now have shape (768,)
@@ -273,9 +300,9 @@ def convert_to_npy(input_dir, output_path):
     else:
         # For other features, use object dtype to handle variable lengths
         data = np.array(data, dtype=object)
-    
+
     labels = np.array(labels)
-    
+
     # Save to .npy file
     np.save(output_path, {"x": data, "y": labels})
     print("✅ Dataset conversion to .npy complete! Saved to:", output_path)
@@ -290,9 +317,7 @@ if __name__ == "__main__":
     print("============================\n")
 
     train_loader, val_loader = load_feature_dataset(
-        data_directory="datas/features/MFCC/EMODB_MFCC_96",
-        batch_size=4,
-        val_split=0.2
+        data_directory="datas/features/MFCC/EMODB_MFCC_96", batch_size=4, val_split=0.2
     )
 
     print("📊 Previewing one batch:")

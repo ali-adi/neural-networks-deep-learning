@@ -198,7 +198,7 @@ This project now includes Local Maximum Mean Discrepancy (LMMD) loss for domain 
 LMMD measures and minimizes the difference between probability distributions of source and target domains in a reproducing kernel Hilbert space (RKHS), with class-specific alignment.
 
 The loss function:
-- Utilizes Gaussian kernels to measure similarity in the feature space 
+- Utilizes Gaussian kernels to measure similarity in the feature space
 - Computes class-conditional distribution distances
 - Updates pseudo-labels during training to improve alignment
 - Combines standard classification loss with the LMMD adaptation loss

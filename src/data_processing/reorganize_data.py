@@ -80,25 +80,26 @@ import argparse
 # 🔖 Emotion Mappings
 # ======================
 EMODB_EMOTION_CODE_TO_LABEL = {
-    'W': 'angry',
-    'L': 'boredom',
-    'E': 'disgust',
-    'A': 'fear',
-    'F': 'happy',
-    'T': 'sad',
-    'N': 'neutral'
+    "W": "angry",
+    "L": "boredom",
+    "E": "disgust",
+    "A": "fear",
+    "F": "happy",
+    "T": "sad",
+    "N": "neutral",
 }
 
 RAVDESS_EMOTION_CODE_TO_LABEL = {
-    '01': 'neutral',
-    '02': 'calm',
-    '03': 'happy',
-    '04': 'sad',
-    '05': 'angry',
-    '06': 'fearful',
-    '07': 'disgust',
-    '08': 'surprised'
+    "01": "neutral",
+    "02": "calm",
+    "03": "happy",
+    "04": "sad",
+    "05": "angry",
+    "06": "fearful",
+    "07": "disgust",
+    "08": "surprised",
 }
+
 
 # ======================
 # 🧠 Reorganizer Functions
@@ -133,7 +134,7 @@ def reorganize_emodb(source_directory: str, destination_directory: str):
     skipped_files = []
 
     for file in os.listdir(source_directory):
-        if file.endswith('.wav'):
+        if file.endswith(".wav"):
             if len(file) > 5:
                 emotion_code = file[5].upper()
             else:
@@ -147,7 +148,9 @@ def reorganize_emodb(source_directory: str, destination_directory: str):
                 print(f"[✓] {file} → {emotion_label}/")
                 total_processed += 1
             else:
-                print(f"⚠️ Unknown emotion code in file: {file} | Length: {len(file)} | Char[5]: {file[5] if len(file) > 5 else 'N/A'}")
+                print(
+                    f"⚠️ Unknown emotion code in file: {file} | Length: {len(file)} | Char[5]: {file[5] if len(file) > 5 else 'N/A'}"
+                )
                 skipped_files.append(file)
                 total_unknown += 1
 
@@ -163,6 +166,7 @@ def reorganize_emodb(source_directory: str, destination_directory: str):
         print(f"⚠️ {total_unknown} files had unknown emotion codes and were skipped.")
         print("📄 See 'skipped_files_emodb.txt' for full list.")
     print("\n🎉 REORGANIZATION COMPLETE!\n")
+
 
 def reorganize_ravdess(source_directory: str, destination_directory: str):
     """
@@ -201,24 +205,28 @@ def reorganize_ravdess(source_directory: str, destination_directory: str):
             continue
 
         print(f"\n👤 Processing {actor_dir}...")
-        
+
         for file in os.listdir(actor_path):
-            if file.endswith('.wav'):
+            if file.endswith(".wav"):
                 try:
                     # Split filename by '-' and get the emotion code (3rd part)
-                    parts = file.split('-')
+                    parts = file.split("-")
                     if len(parts) >= 3:
                         emotion_code = parts[2]
                         emotion_label = RAVDESS_EMOTION_CODE_TO_LABEL.get(emotion_code)
 
                         if emotion_label:
                             source_path = os.path.join(actor_path, file)
-                            target_path = os.path.join(destination_directory, emotion_label, file)
+                            target_path = os.path.join(
+                                destination_directory, emotion_label, file
+                            )
                             shutil.copy2(source_path, target_path)
                             print(f"[✓] {file} → {emotion_label}/")
                             total_processed += 1
                         else:
-                            print(f"⚠️ Unknown emotion code in file: {file} | Code: {emotion_code}")
+                            print(
+                                f"⚠️ Unknown emotion code in file: {file} | Code: {emotion_code}"
+                            )
                             skipped_files.append(os.path.join(actor_dir, file))
                             total_unknown += 1
                     else:
@@ -243,6 +251,7 @@ def reorganize_ravdess(source_directory: str, destination_directory: str):
         print("📄 See 'skipped_files_ravdess.txt' for full list.")
     print("\n🎉 REORGANIZATION COMPLETE!\n")
 
+
 # ======================
 # 🚀 CLI Entrypoint
 # ======================
@@ -255,7 +264,7 @@ def main():
         type=str,
         choices=["EMODB", "RAVDESS"],
         required=True,
-        help="Dataset to process (EMODB or RAVDESS)"
+        help="Dataset to process (EMODB or RAVDESS)",
     )
     args = parser.parse_args()
 
@@ -271,6 +280,7 @@ def main():
         reorganize_emodb(source_dir, dest_dir)
     else:  # RAVDESS
         reorganize_ravdess(source_dir, dest_dir)
+
 
 if __name__ == "__main__":
     main()

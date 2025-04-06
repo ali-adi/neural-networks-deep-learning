@@ -25,6 +25,7 @@ Ensure the following functions are implemented:
 - `extract_all_features_dual()` in `extract_feature.py`
 - `convert_to_npy()` in `load_dataset.py`
 """
+
 # ================================
 # 📦 Imports
 # ================================
@@ -33,6 +34,7 @@ import os
 from src.data_processing.reorganize_data import reorganize_emodb, reorganize_ravdess
 from src.data_processing.extract_feature import extract_all_features_dual
 from src.data_processing.load_dataset import convert_to_npy
+
 
 # ================================
 # 🚀 Full Pipeline Runner
@@ -46,10 +48,10 @@ def main(dataset="EMODB"):
     print("🗂️  [1/3] Reorganizing raw .wav files...")
     source_dir = os.path.join("data", "raw", dataset)
     dest_dir = os.path.join("data", "processed", dataset)
-    
+
     # Create destination directory if it doesn't exist
     os.makedirs(dest_dir, exist_ok=True)
-    
+
     # Call appropriate reorganizer function
     if dataset == "EMODB":
         reorganize_emodb(source_dir, dest_dir)
@@ -65,28 +67,38 @@ def main(dataset="EMODB"):
 
     convert_to_npy(
         input_dir=f"data/features/MFCC/{dataset}_MFCC_96",
-        output_path=f"data/features/MFCC/{dataset}_MFCC_96/{dataset}.npy"
+        output_path=f"data/features/MFCC/{dataset}_MFCC_96/{dataset}.npy",
     )
 
     convert_to_npy(
         input_dir=f"data/features/LOGMEL/{dataset}_LOGMEL_128",
-        output_path=f"data/features/LOGMEL/{dataset}_LOGMEL_128/{dataset}.npy"
+        output_path=f"data/features/LOGMEL/{dataset}_LOGMEL_128/{dataset}.npy",
     )
 
     convert_to_npy(
         input_dir=f"data/features/HUBERT/{dataset}_HUBERT",
-        output_path=f"data/features/HUBERT/{dataset}_HUBERT/{dataset}.npy"
+        output_path=f"data/features/HUBERT/{dataset}_HUBERT/{dataset}.npy",
     )
 
-    print(f"\n✅ All done! MFCC, LogMel, and HuBERT features for {dataset} are ready for training.")
+    print(
+        f"\n✅ All done! MFCC, LogMel, and HuBERT features for {dataset} are ready for training."
+    )
+
 
 # ================================
 # 🔧 CLI Entrypoint
 # ================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the full data processing pipeline for speech emotion recognition.")
-    parser.add_argument("--dataset", type=str, default="EMODB", choices=["EMODB", "RAVDESS"], 
-                        help="Dataset to process (EMODB or RAVDESS)")
-    
+    parser = argparse.ArgumentParser(
+        description="Run the full data processing pipeline for speech emotion recognition."
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="EMODB",
+        choices=["EMODB", "RAVDESS"],
+        help="Dataset to process (EMODB or RAVDESS)",
+    )
+
     args = parser.parse_args()
     main(args.dataset)
