@@ -135,7 +135,12 @@ class TemporalConvNet:
 
 class WeightLayer(tf.keras.layers.Layer):
     def build(self, input_shape):
-        self.kernel = self.add_weight("kernel", shape=(input_shape[1], 1), initializer='uniform', trainable=True)
+        self.kernel = self.add_weight(
+            name="kernel",
+            shape=[input_shape[1], 1],
+            initializer='uniform',
+            trainable=True
+        )
 
     def call(self, inputs):
         x = tf.transpose(inputs, [0, 2, 1])

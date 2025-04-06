@@ -52,13 +52,19 @@ from glob import glob
 # 🔖 Label Mapping
 # ====================
 LABEL_MAP = {
-    "angry": 0,
-    "boredom": 1,
-    "disgust": 2,
-    "fear": 3,
-    "happy": 4,
-    "sad": 5,
-    "neutral": 6
+    # EMODB labels
+    'angry': 0,
+    'boredom': 1,
+    'disgust': 2,
+    'fear': 3,
+    'happy': 4,
+    'neutral': 5,
+    'sad': 6,
+    
+    # RAVDESS labels
+    'calm': 7,
+    'fearful': 8,
+    'surprised': 9
 }
 
 # ==============================
@@ -145,7 +151,6 @@ def load_feature_dataset(data_directory, batch_size=32, val_split=0.2, shuffle=T
 # 🔗 Load and Fuse HuBERT + Logmel Arrays
 # ======================================
 def load_fused_tensorflow_dataset(dataset_name):
-    from tensorflow.keras.preprocessing.sequence import pad_sequences
     """
     Fuses HuBERT and logmel .npy features for TensorFlow training.
 
@@ -155,8 +160,11 @@ def load_fused_tensorflow_dataset(dataset_name):
     Returns:
         Tuple[np.ndarray, np.ndarray]: x_fused, y_labels
     """
-    logmel_path = f"datas/features/{dataset_name}_LOGMEL/{dataset_name}.npy"
-    hubert_path = f"datas/features/{dataset_name}_HUBERT/{dataset_name}.npy"
+    logmel_path = os.path.join("data", "features", "LOGMEL", "EMODB_LOGMEL_128", f"{dataset_name}.npy")
+    hubert_path = os.path.join("data", "features", "HUBERT", "EMODB_HUBERT", f"{dataset_name}.npy")
+
+    print(f"Loading LogMel features from: {logmel_path}")
+    print(f"Loading HuBERT features from: {hubert_path}")
 
     logmel = np.load(logmel_path, allow_pickle=True).item()
     hubert = np.load(hubert_path, allow_pickle=True).item()
@@ -164,8 +172,8 @@ def load_fused_tensorflow_dataset(dataset_name):
     x_logmel, y_logmel = logmel['x'], logmel['y']
     x_hubert, y_hubert = hubert['x'], hubert['y']
 
-    assert len(x_logmel) == len(x_hubert),
-    assert np.array_equal(y_logmel, y_hubert),
+    assert len(x_logmel) == len(x_hubert)
+    assert np.array_equal(y_logmel, y_hubert)
 
     # ⚠️ Pad each feature set separately to the same time dimension
     x_logmel = pad_sequences(x_logmel, padding="post", dtype="float32")
@@ -176,8 +184,12 @@ def load_fused_tensorflow_dataset(dataset_name):
     x_logmel = x_logmel[:, :min_timesteps, :]
     x_hubert = x_hubert[:, :min_timesteps, :]
 
+    print(f"LogMel shape: {x_logmel.shape}")
+    print(f"HuBERT shape: {x_hubert.shape}")
+
     # ✅ Concatenate along feature dimension
     x_fused = np.concatenate([x_logmel, x_hubert], axis=-1)
+    print(f"Fused shape: {x_fused.shape}")
 
     return x_fused, y_logmel
 
@@ -199,22 +211,68 @@ def load_all_feature_datasets(dataset_name="EMODB", batch_size=64):
     return mfcc_train, mfcc_val, x_fused, y_fused
 
 # 🔄 CONVERT FOLDER TO .NPY FORMAT FOR TENSORFLOW (SINGLE FILE)
-def convert_to_npy(input_dir="datas/features/MFCC/EMODB_MFCC_96", output_path="datas/features/MFCC/EMODB_MFCC_96/EMODB.npy"):
+def convert_to_npy(input_dir, output_path):
+    """
+    Convert extracted features from a directory structure to a single .npy file.
+    
+    Args:
+        input_dir (str): Directory containing emotion-labeled feature folders
+        output_path (str): Path to save the .npy file
+    """
     print(f"📤 Converting from folder '{input_dir}' to single .npy file → {output_path}")
+    
     data = []
     labels = []
-    for label in os.listdir(input_dir):
-        label_dir = os.path.join(input_dir, label)
-        if not os.path.isdir(label_dir):
+    
+    # Get all emotion folders
+    emotion_folders = [f for f in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, f))]
+    
+    # Check if this is HuBERT features (which have a different shape)
+    is_hubert = "HUBERT" in input_dir
+    
+    for emotion_folder in emotion_folders:
+        label_dir = os.path.join(input_dir, emotion_folder)
+        label_index = LABEL_MAP.get(emotion_folder.lower(), -1)
+        
+        if label_index == -1:
+            print(f"⚠️ Warning: Unknown emotion label '{emotion_folder}', skipping...")
             continue
-        label_index = LABEL_MAP.get(label)
+        
         for file in os.listdir(label_dir):
             if file.endswith(".npy"):
                 feat = np.load(os.path.join(label_dir, file))
+                
+                # Handle HuBERT features differently
+                if is_hubert:
+                    # HuBERT features have shape [sequence_length, hidden_size]
+                    # We need to ensure consistent shape for all samples
+                    # Option 1: Take mean across time dimension
+                    feat = np.mean(feat, axis=0)
+                
                 data.append(feat)
                 labels.append(label_index)
-    data = np.array(data, dtype=object)
+    
+    # Convert to numpy arrays
+    if is_hubert:
+        # For HuBERT, we need to handle potential shape inconsistencies
+        # First, check if all features have the same shape
+        shapes = [feat.shape for feat in data]
+        unique_shapes = set(shapes)
+        
+        if len(unique_shapes) > 1:
+            print(f"⚠️ Warning: HuBERT features have inconsistent shapes: {unique_shapes}")
+            print("⚠️ Using object dtype to handle variable shapes")
+            data = np.array(data, dtype=object)
+        else:
+            # All features have the same shape, can use regular array
+            data = np.array(data)
+    else:
+        # For other features, use object dtype to handle variable lengths
+        data = np.array(data, dtype=object)
+    
     labels = np.array(labels)
+    
+    # Save to .npy file
     np.save(output_path, {"x": data, "y": labels})
     print("✅ Dataset conversion to .npy complete! Saved to:", output_path)
 

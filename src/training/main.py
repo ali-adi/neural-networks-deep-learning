@@ -86,14 +86,11 @@ def load_data_by_type(args):
         x_source, y_source = load_fused_tensorflow_dataset(args.data)
     else:
         if args.feature_type == 'MFCC':
-            subfolder = f"{args.data}_MFCC_96"
-            data_path = os.path.join("datas", "features", "MFCC", subfolder, f"{args.data}.npy")
+            data_path = os.path.join("data", "features", "MFCC", "EMODB_MFCC_96", f"{args.data}.npy")
         elif args.feature_type == 'LOGMEL':
-            subfolder = f"{args.data}_LOGMEL"
-            data_path = os.path.join("datas", "features", subfolder, f"{args.data}.npy")
+            data_path = os.path.join("data", "features", "LOGMEL", "EMODB_LOGMEL_128", f"{args.data}.npy")
         elif args.feature_type == 'HUBERT':
-            subfolder = f"{args.data}_HUBERT"
-            data_path = os.path.join("datas", "features", subfolder, f"{args.data}.npy")
+            data_path = os.path.join("data", "features", "HUBERT", "EMODB_HUBERT", f"{args.data}.npy")
         else:
             raise ValueError("Unsupported feature type. Must be MFCC, LOGMEL, HUBERT, or FUSION.")
 

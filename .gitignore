@@ -1,6 +1,7 @@
 *.csv
 *.wav
 *.xlsx
+*.h5
 
 ```gitignore
 # Python bytecode and cache files

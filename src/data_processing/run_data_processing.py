@@ -14,7 +14,9 @@ USAGE:
 ------
 Run this from the root project directory with:
 
-    python -m src.data_processing.run_data_processing
+    python -m src.data_processing.run_data_processing --dataset EMODB
+    # or
+    python -m src.data_processing.run_data_processing --dataset RAVDESS
 
 REQUIREMENTS:
 -------------
@@ -26,6 +28,7 @@ Ensure the following functions are implemented:
 # ================================
 # 📦 Imports
 # ================================
+import argparse
 from src.data_processing.reorganize_data import reorganize_features
 from src.data_processing.extract_feature import extract_all_features_dual
 from src.data_processing.load_dataset import convert_to_npy
@@ -33,41 +36,46 @@ from src.data_processing.load_dataset import convert_to_npy
 # ================================
 # 🚀 Full Pipeline Runner
 # ================================
-def main():
+def main(dataset="EMODB"):
     print("\n==============================")
-    print("🔁 FULL DATA PROCESSING PIPELINE")
+    print(f"🔁 FULL DATA PROCESSING PIPELINE FOR {dataset}")
     print("==============================\n")
 
     # Step 1: Reorganize .wav files into labeled folders
     print("🗂️  [1/3] Reorganizing raw .wav files...")
-    reorganize_features()
+    reorganize_features(dataset)
 
     # Step 2: Extract MFCC + LogMel + HuBERT features
     print("\n🎵 [2/3] Extracting MFCC, LogMel, and HuBERT features...")
-    extract_all_features_dual()
+    extract_all_features_dual(dataset)
 
     # Step 3: Convert all to .npy format
     print("\n📦 [3/3] Converting extracted features to .npy format...")
 
     convert_to_npy(
-        input_dir="datas/features/MFCC/EMODB_MFCC_96",
-        output_path="datas/features/MFCC/EMODB_MFCC_96/EMODB.npy"
+        input_dir=f"data/features/MFCC/{dataset}_MFCC_96",
+        output_path=f"data/features/MFCC/{dataset}_MFCC_96/{dataset}.npy"
     )
 
     convert_to_npy(
-        input_dir="datas/features/EMODB_LOGMEL",
-        output_path="datas/features/EMODB_LOGMEL/EMODB.npy"
+        input_dir=f"data/features/LOGMEL/{dataset}_LOGMEL_128",
+        output_path=f"data/features/LOGMEL/{dataset}_LOGMEL_128/{dataset}.npy"
     )
 
     convert_to_npy(
-        input_dir="datas/features/EMODB_HUBERT",
-        output_path="datas/features/EMODB_HUBERT/EMODB.npy"
+        input_dir=f"data/features/HUBERT/{dataset}_HUBERT",
+        output_path=f"data/features/HUBERT/{dataset}_HUBERT/{dataset}.npy"
     )
 
-    print("\n✅ All done! MFCC, LogMel, and HuBERT features are ready for training.")
+    print(f"\n✅ All done! MFCC, LogMel, and HuBERT features for {dataset} are ready for training.")
 
 # ================================
 # 🔧 CLI Entrypoint
 # ================================
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Run the full data processing pipeline for speech emotion recognition.")
+    parser.add_argument("--dataset", type=str, default="EMODB", choices=["EMODB", "RAVDESS"], 
+                        help="Dataset to process (EMODB or RAVDESS)")
+    
+    args = parser.parse_args()
+    main(args.dataset)
