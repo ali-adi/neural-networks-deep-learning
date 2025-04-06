@@ -181,6 +181,7 @@ class SpeechEmotionModel:
         self.now = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         self.best_fold_acc = 0
         self.best_fold_weight_path = ""
+        self.use_lmmd = hasattr(args, 'use_lmmd') and args.use_lmmd
 
         # Configure GPU if available (Metal or CUDA)
         try:
@@ -195,6 +196,21 @@ class SpeechEmotionModel:
             print("⚠️ Model will use CPU")
 
         print(f"🧠 Initialized SER model with input shape: {input_shape}")
+        
+        # Initialize LMMD loss if needed
+        if self.use_lmmd:
+            try:
+                from .lmmd_loss import LMMDLoss
+                self.lmmd_loss = LMMDLoss(
+                    num_classes=self.num_classes,
+                    weight=0.5,  # Weight for LMMD loss (can be tuned)
+                    kernel_mul=2.0,
+                    kernel_num=5
+                )
+                print(f"✅ LMMD Loss initialized with {self.num_classes} classes")
+            except ImportError:
+                print("⚠️ Could not import LMMD loss, falling back to regular training")
+                self.use_lmmd = False
 
     def create_model(self):
         print("\n🛠️ Building model architecture...")
@@ -294,6 +310,300 @@ class SpeechEmotionModel:
             # Save the weight
             shutil.copy(self.best_fold_weight_path, os.path.join(feature_subfolder, best_name))
             print(f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to {feature_subfolder}/{best_name}")
+
+    def train_with_domain_adaptation(self, source_data, source_labels, target_data, target_labels=None):
+        """
+        Train the model with domain adaptation using LMMD loss
+        
+        Args:
+            source_data: Source domain data (e.g., EMODB)
+            source_labels: Source domain labels
+            target_data: Target domain data (e.g., RAVDESS)
+            target_labels: Optional ground truth labels for the target domain
+        """
+        if not self.use_lmmd:
+            print("⚠️ LMMD loss not enabled. Use --use_lmmd flag for domain adaptation.")
+            return self.train(source_data, source_labels)
+            
+        print(f"🚀 Starting domain adaptation training with LMMD loss...")
+        print(f"📊 Source domain: shape {source_data.shape}")
+        print(f"📊 Target domain: shape {target_data.shape}")
+            
+        # Import LMMD loss
+        from .lmmd_loss import LMMDLoss, get_lmmd_loss
+            
+        # Create the model
+        if self.model is None:
+            self.create_model()
+            
+        # Make sure source labels are one-hot encoded
+        if len(source_labels.shape) == 1:
+            source_labels_onehot = to_categorical(source_labels, num_classes=self.num_classes)
+        else:
+            source_labels_onehot = source_labels
+            
+        # Get initial pseudo-labels for target domain if no labels are provided
+        if target_labels is None:
+            # Use model to predict initial pseudo-labels
+            self.model.compile(
+                optimizer=Adam(learning_rate=self.args.lr, beta_1=self.args.beta1, beta_2=self.args.beta2),
+                loss='categorical_crossentropy',
+                metrics=['accuracy']
+            )
+            
+            # Fit on source data first to get basic model
+            print("🔍 Pretraining on source domain for initial pseudo-labels...")
+            self.model.fit(
+                source_data, source_labels_onehot,
+                batch_size=self.args.batch_size,
+                epochs=5,  # Just a few epochs for initialization
+                verbose=0
+            )
+            
+            # Generate pseudo-labels
+            target_preds = self.model.predict(target_data)
+            target_pseudo_labels = target_preds
+        else:
+            # Use provided target labels
+            if len(target_labels.shape) == 1:
+                target_pseudo_labels = to_categorical(target_labels, num_classes=self.num_classes)
+            else:
+                target_pseudo_labels = target_labels
+                
+        # Prepare data for cross-validation
+        kf = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=self.args.random_seed)
+        fold = 1
+        
+        # Create model result directory
+        os.makedirs(self.result_dir, exist_ok=True)
+        
+        # Cross-validation loop
+        acc_sum = 0
+        
+        test_models_path = f"test_models/{self.args.data}/{self.args.feature_type}/"
+        os.makedirs(test_models_path, exist_ok=True)
+            
+        for train_idx, val_idx in kf.split(source_data):
+            print(f"\n📂 Fold {fold}/{self.args.split_fold}")
+            
+            # Split source data
+            x_train, x_val = source_data[train_idx], source_data[val_idx]
+            y_train, y_val = source_labels_onehot[train_idx], source_labels_onehot[val_idx]
+            
+            # Get validation indices for target domain (same proportion as source)
+            target_val_size = int(len(val_idx) / len(train_idx) * target_data.shape[0])
+            target_val_indices = np.random.choice(target_data.shape[0], target_val_size, replace=False)
+            target_train_indices = np.array([i for i in range(target_data.shape[0]) if i not in target_val_indices])
+            
+            # Split target data
+            target_train = target_data[target_train_indices]
+            target_val = target_data[target_val_indices]
+            target_train_labels = target_pseudo_labels[target_train_indices]
+            target_val_labels = target_pseudo_labels[target_val_indices]
+            
+            # Recreate model for this fold
+            tf.keras.backend.clear_session()
+            self.create_model()
+            
+            # Create a custom training function using LMMD loss
+            print("🛠️ Building domain adaptation model...")
+            
+            # Define a custom training step
+            @tf.function
+            def train_step(source_batch, source_labels_batch, target_batch, target_labels_batch):
+                with tf.GradientTape() as tape:
+                    # Get source predictions
+                    source_preds = self.model(source_batch, training=True)
+                    
+                    # Get target predictions
+                    target_preds = self.model(target_batch, training=True)
+                    
+                    # Extract features from the layer before final dense layer
+                    source_features_model = tf.keras.Model(
+                        inputs=self.model.input,
+                        outputs=self.model.layers[-2].output
+                    )
+                    target_features_model = tf.keras.Model(
+                        inputs=self.model.input,
+                        outputs=self.model.layers[-2].output
+                    )
+                    
+                    source_features = source_features_model(source_batch, training=True)
+                    target_features = target_features_model(target_batch, training=True)
+                    
+                    # Calculate classification loss
+                    class_loss = tf.keras.losses.categorical_crossentropy(
+                        source_labels_batch, source_preds
+                    )
+                    
+                    # Calculate LMMD loss
+                    lmmd = self.lmmd_loss.get_lmmd_loss_fn()(
+                        source_labels_batch, source_preds,
+                        source_features, target_features,
+                        source_labels_batch, target_labels_batch
+                    )
+                    
+                    # Calculate total loss
+                    total_loss = tf.reduce_mean(class_loss) + lmmd
+                    
+                # Compute gradients
+                gradients = tape.gradient(total_loss, self.model.trainable_variables)
+                
+                # Update weights
+                optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+                
+                return total_loss, tf.reduce_mean(class_loss), lmmd
+            
+            # Create optimizer
+            optimizer = Adam(learning_rate=self.args.lr, beta_1=self.args.beta1, beta_2=self.args.beta2)
+            
+            # Compile the model for evaluation metrics
+            self.model.compile(
+                optimizer=optimizer,
+                loss='categorical_crossentropy',
+                metrics=['accuracy']
+            )
+            
+            # Setup callbacks
+            weight_path = os.path.join(test_models_path, f"{self.args.split_fold}-fold_weights_{fold}.weights.h5")
+            best_weight_path = os.path.join(test_models_path, f"{self.args.split_fold}-fold_weights_best_{fold}.weights.h5")
+            
+            checkpoint = callbacks.ModelCheckpoint(
+                weight_path,
+                monitor='val_accuracy',
+                verbose=0,
+                save_best_only=False,
+                save_weights_only=True,
+                mode='max'
+            )
+            
+            best_checkpoint = callbacks.ModelCheckpoint(
+                best_weight_path,
+                monitor='val_accuracy',
+                verbose=0,
+                save_best_only=True,
+                save_weights_only=True,
+                mode='max'
+            )
+            
+            early_stopping = callbacks.EarlyStopping(
+                monitor='val_accuracy',
+                patience=30,
+                restore_best_weights=True
+            )
+            
+            # Train the model with domain adaptation
+            print(f"🚂 Training with domain adaptation...")
+            
+            # Number of batches
+            batch_size = self.args.batch_size
+            steps_per_epoch = len(x_train) // batch_size
+            
+            # Training loop
+            best_val_acc = 0
+            patience_counter = 0
+            max_patience = 30
+            
+            for epoch in range(self.args.epoch):
+                # Shuffle indices
+                source_indices = np.random.permutation(len(x_train))
+                target_indices = np.random.permutation(len(target_train))
+                
+                epoch_loss = 0
+                epoch_class_loss = 0
+                epoch_lmmd_loss = 0
+                
+                # Process batches
+                for batch in range(steps_per_epoch):
+                    start_idx = batch * batch_size
+                    end_idx = min(start_idx + batch_size, len(x_train))
+                    
+                    # Get source batch
+                    source_batch_indices = source_indices[start_idx:end_idx]
+                    source_batch = x_train[source_batch_indices]
+                    source_batch_labels = y_train[source_batch_indices]
+                    
+                    # Get target batch (cyclically if needed)
+                    target_batch_indices = target_indices[(start_idx % len(target_train)):((start_idx % len(target_train)) + batch_size)]
+                    if len(target_batch_indices) < batch_size:
+                        target_batch_indices = np.concatenate([
+                            target_batch_indices, 
+                            target_indices[:(batch_size - len(target_batch_indices))]
+                        ])
+                    
+                    target_batch = target_train[target_batch_indices]
+                    target_batch_labels = target_train_labels[target_batch_indices]
+                    
+                    # Train on this batch
+                    batch_loss, batch_class_loss, batch_lmmd_loss = train_step(
+                        source_batch, source_batch_labels, 
+                        target_batch, target_batch_labels
+                    )
+                    
+                    epoch_loss += batch_loss / steps_per_epoch
+                    epoch_class_loss += batch_class_loss / steps_per_epoch
+                    epoch_lmmd_loss += batch_lmmd_loss / steps_per_epoch
+                
+                # Evaluate on validation set
+                val_results = self.model.evaluate(x_val, y_val, verbose=0)
+                val_loss, val_acc = val_results
+                
+                # Update best accuracy
+                if val_acc > best_val_acc:
+                    best_val_acc = val_acc
+                    patience_counter = 0
+                    # Save best weights
+                    self.model.save_weights(best_weight_path)
+                else:
+                    patience_counter += 1
+                
+                # Print progress
+                print(f"Epoch {epoch+1}/{self.args.epoch} - Loss: {epoch_loss:.4f} (Class: {epoch_class_loss:.4f}, LMMD: {epoch_lmmd_loss:.4f}) - Val_acc: {val_acc:.4f}")
+                
+                # Update pseudo-labels for target domain every 10 epochs
+                if (epoch + 1) % 10 == 0:
+                    target_preds = self.model.predict(target_train)
+                    target_train_labels = target_preds
+                
+                # Early stopping
+                if patience_counter >= max_patience:
+                    print(f"⏱️ Early stopping at epoch {epoch+1}")
+                    break
+            
+            # Load best weights
+            self.model.load_weights(best_weight_path)
+            
+            # Evaluate on validation set
+            val_results = self.model.evaluate(x_val, y_val, verbose=0)
+            val_loss, val_acc = val_results
+            
+            print(f"📊 Fold {fold} validation accuracy: {val_acc:.4f}")
+            acc_sum += val_acc
+            
+            # Save confusion matrix
+            y_pred = np.argmax(self.model.predict(x_val), axis=1)
+            y_true = np.argmax(y_val, axis=1)
+            cm = confusion_matrix(y_true, y_pred)
+            self.matrix.append(cm)
+            
+            if val_acc > self.best_fold_acc:
+                self.best_fold_acc = val_acc
+                self.best_fold_weight_path = best_weight_path
+            
+            fold += 1
+        
+        # Calculate average accuracy
+        acc_avg = acc_sum / self.args.split_fold
+        print(f"\n📊 Average validation accuracy: {acc_avg:.4f}")
+        print(f"🥇 Best fold accuracy: {self.best_fold_acc:.4f}")
+        print(f"💾 Best weights saved to: {self.best_fold_weight_path}")
+        
+        # Load best weights for inference
+        self.model.load_weights(self.best_fold_weight_path)
+        self.trained = True
+        self.acc = acc_avg
+        
+        return self.acc
 
     def evaluate_test(self, x_test, y_test, path=None, result_filename=None, result_dir=None):
         """

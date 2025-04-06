@@ -162,7 +162,7 @@ def load_data_by_type(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Train or test a temporal conv-based speech emotion model.")
-    parser.add_argument('--mode', type=str, default="train", choices=["train", "test", "test-cross-corpus"], help="Run mode: train, test, or test-cross-corpus.")
+    parser.add_argument('--mode', type=str, default="train", choices=["train", "test", "test-cross-corpus", "train-lmmd"], help="Run mode: train, test, test-cross-corpus, or train-lmmd.")
     parser.add_argument('--model_path', type=str, default='./saved_models/', help="Root directory to save model checkpoints.")
     parser.add_argument('--result_path', type=str, default='./results/', help="Root directory to save evaluation results.")
     parser.add_argument('--test_path', type=str, default='./test_models/EMODB', help="Path to load test model weights or folder containing .h5 files.")
@@ -183,6 +183,9 @@ def main():
     parser.add_argument('--split_fold', type=int, default=2, help="More cross-validation folds for stability.")
     parser.add_argument('--gpu', type=str, default='0', help="GPU device index to use.")
     parser.add_argument('--visualize', action='store_true', help="Whether to visualize confusion matrix (requires matplotlib)")
+    parser.add_argument('--use_lmmd', action='store_true', help="Whether to use LMMD loss for domain adaptation")
+    parser.add_argument('--lmmd_weight', type=float, default=0.5, help="Weight for LMMD loss in domain adaptation")
+    parser.add_argument('--target_data', type=str, default=None, help="Target domain dataset for domain adaptation (if different from --data)")
 
     args = parser.parse_args()
 
@@ -440,6 +443,150 @@ def main():
                 print("⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'")
         
         print("\n✅ Cross-corpus validation complete!\n")
+
+    elif args.mode == "train-lmmd":
+        # Domain adaptation training with LMMD
+        print("🚀 Starting domain adaptation training with LMMD loss")
+        
+        # Set the target dataset - if not specified, use the opposite of source
+        target_dataset = args.target_data if args.target_data else ("RAVDESS" if args.data == "EMODB" else "EMODB")
+        print(f"📊 Source domain: {args.data}")
+        print(f"📊 Target domain: {target_dataset}")
+        
+        # Save the original data args
+        source_dataset = args.data
+        
+        # Load target domain data
+        args.data = target_dataset
+        x_target, y_target = load_data_by_type(args)
+        
+        # Restore original args
+        args.data = source_dataset
+        
+        # Check shapes and adjust if needed
+        print(f"Source data shape: {x_source.shape}")
+        print(f"Target data shape: {x_target.shape}")
+        
+        # Get labels for both datasets
+        source_class_labels = LABEL_DICT[args.data]
+        target_class_labels = LABEL_DICT[target_dataset]
+        
+        print(f"Source classes: {source_class_labels}")
+        print(f"Target classes: {target_class_labels}")
+        
+        # Initialize the model with source domain class labels
+        ser_model = SpeechEmotionModel(input_shape=x_source.shape[1:], class_labels=source_class_labels, args=args)
+        
+        # Train with domain adaptation
+        # Initialize LMMD loss by setting the flag
+        args.use_lmmd = True
+        ser_model.train_with_domain_adaptation(x_source, y_source, x_target, y_target)
+        
+        print("\n✅ Domain adaptation training complete!")
+        print(f"🏆 Best model saved to: {ser_model.best_fold_weight_path}")
+        
+        # Get classification report
+        if ser_model.trained:
+            # Evaluate on source validation data
+            y_source_pred = ser_model.model.predict(x_source)
+            y_source_pred = np.argmax(y_source_pred, axis=1)
+            y_source_true = y_source if len(y_source.shape) == 1 else np.argmax(y_source, axis=1)
+            
+            source_report = classification_report(
+                y_source_true, y_source_pred, 
+                target_names=source_class_labels, 
+                digits=4, zero_division=0
+            )
+            
+            print("\n📊 Source Domain Classification Report:")
+            print(source_report)
+            
+            # Also evaluate on target data
+            y_target_pred = ser_model.model.predict(x_target)
+            y_target_pred = np.argmax(y_target_pred, axis=1)
+            y_target_true = y_target if len(y_target.shape) == 1 else np.argmax(y_target, axis=1)
+            
+            # Adjust target class names if needed
+            if len(target_class_labels) != max(y_target_true) + 1:
+                target_names = [f"Class {i}" for i in range(max(y_target_true) + 1)]
+            else:
+                target_names = target_class_labels
+                
+            target_report = classification_report(
+                y_target_true, y_target_pred, 
+                target_names=target_names, 
+                digits=4, zero_division=0
+            )
+            
+            print("\n📊 Target Domain Classification Report:")
+            print(target_report)
+            
+        # Generate and save confusion matrix if requested
+        if args.visualize:
+            try:
+                import matplotlib.pyplot as plt
+                import seaborn as sns
+                
+                print("\n📊 Generating confusion matrix visualizations...")
+                
+                # Convert labels to appropriate format if they're not already
+                if not 'y_source_true' in locals() or not 'y_source_pred' in locals():
+                    # If we haven't evaluated on source data yet, do it now
+                    y_source_pred = ser_model.model.predict(x_source)
+                    y_source_pred = np.argmax(y_source_pred, axis=1)
+                    y_source_true = y_source if len(y_source.shape) == 1 else np.argmax(y_source, axis=1)
+                
+                # Similarly ensure target predictions are available
+                if not 'y_target_true' in locals() or not 'y_target_pred' in locals():
+                    y_target_pred = ser_model.model.predict(x_target)
+                    y_target_pred = np.argmax(y_target_pred, axis=1)
+                    y_target_true = y_target if len(y_target.shape) == 1 else np.argmax(y_target, axis=1)
+                    
+                    # Adjust target class names if needed
+                    if len(target_class_labels) != max(y_target_true) + 1:
+                        target_names = [f"Class {i}" for i in range(max(y_target_true) + 1)]
+                    else:
+                        target_names = target_class_labels
+                
+                # Source domain visualization
+                cm_source = confusion_matrix(y_source_true, y_source_pred)
+                cm_source_norm = cm_source.astype('float') / cm_source.sum(axis=1)[:, np.newaxis]
+                
+                plt.figure(figsize=(10, 8))
+                sns.heatmap(cm_source_norm, annot=True, fmt='.2f', cmap='Blues',
+                           xticklabels=source_class_labels,
+                           yticklabels=source_class_labels)
+                plt.xlabel('Predicted')
+                plt.ylabel('True')
+                plt.title(f'Source Domain ({args.data}) Confusion Matrix')
+                
+                # Create results directory if needed
+                os.makedirs(args.result_path, exist_ok=True)
+                source_viz_path = os.path.join(args.result_path, f"lmmd_{args.data}_source_cm.png")
+                plt.savefig(source_viz_path)
+                
+                # Target domain visualization
+                cm_target = confusion_matrix(y_target_true, y_target_pred)
+                cm_target_norm = cm_target.astype('float') / cm_target.sum(axis=1)[:, np.newaxis]
+                
+                plt.figure(figsize=(10, 8))
+                sns.heatmap(cm_target_norm, annot=True, fmt='.2f', cmap='Blues',
+                           xticklabels=target_names,
+                           yticklabels=target_names)
+                plt.xlabel('Predicted')
+                plt.ylabel('True')
+                plt.title(f'Target Domain ({target_dataset}) Confusion Matrix')
+                
+                target_viz_path = os.path.join(args.result_path, f"lmmd_{target_dataset}_target_cm.png")
+                plt.savefig(target_viz_path)
+                
+                print(f"✅ Visualizations saved to: {args.result_path}")
+                
+            except ImportError:
+                print("⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'")
+
+    else:
+        print(f"⚠️ Invalid mode: {args.mode}")
 
 if __name__ == "__main__":
     main()

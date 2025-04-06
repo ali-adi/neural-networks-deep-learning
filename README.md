@@ -1,6 +1,6 @@
 # Speech Emotion Recognition (SER) System
 
-A deep learning-based system for recognizing emotions in speech using FUSION features (LogMel + HuBERT) for optimal performance.
+A deep learning-based system for recognizing emotions in speech using FUSION features (LogMel + HuBERT) for optimal performance, with support for domain adaptation between datasets.
 
 ## 🚀 Features
 
@@ -9,9 +9,11 @@ A deep learning-based system for recognizing emotions in speech using FUSION fea
   - HuBERT embeddings (768 dimensions)
 - Deep learning model with dilated convolutional layers
 - K-fold cross-validation
-- Cross-corpus evaluation support (EMODB ↔ IEMOCAP)
+- Cross-corpus evaluation support (EMODB ↔ RAVDESS)
 - Comprehensive evaluation metrics
-- Support for multiple datasets (EMODB, IEMOCAP, RAVDE)
+- Support for multiple datasets (EMODB, RAVDESS)
+- **NEW**: Domain adaptation using LMMD (Local Maximum Mean Discrepancy) loss
+- **NEW**: Robust cross-corpus testing with automatic emotion mapping
 
 ## 📁 Project Structure
 
@@ -22,17 +24,19 @@ A deep learning-based system for recognizing emotions in speech using FUSION fea
 │   └── features/               # Extracted features
 │       ├── LOGMEL/            # LogMel spectrograms
 │       │   ├── EMODB_LOGMEL_128/
-│       │   └── IEMOCAP_LOGMEL_128/
+│       │   └── RAVDESS_LOGMEL_128/
 │       ├── HUBERT/            # HuBERT embeddings
 │       │   ├── EMODB_HUBERT/
-│       │   └── IEMOCAP_HUBERT/
+│       │   └── RAVDESS_HUBERT/
 │       └── FUSION/            # Combined features
 │           ├── EMODB_FUSION/
-│           └── IEMOCAP_FUSION/
+│           └── RAVDESS_FUSION/
 ├── src/
 │   ├── data_processing/       # Data preprocessing scripts
 │   ├── feature_extraction/    # Feature extraction modules
 │   ├── models/               # Model architecture
+│   │   ├── model.py          # Core SER model
+│   │   └── lmmd_loss.py      # LMMD loss for domain adaptation
 │   └── training/             # Training scripts
 ├── saved_models/             # Trained model checkpoints
 ├── results/                  # Training results and metrics
@@ -69,24 +73,49 @@ This will automatically:
 
 ### 2. Training
 
+#### Regular Training
 Train the model with FUSION features:
 ```bash
 # Train on EMODB
 python -m src.training.main --mode train --data EMODB --feature_type FUSION --epoch 50 --batch_size 32
 
-# Train on IEMOCAP
-python -m src.training.main --mode train --data IEMOCAP --feature_type FUSION --epoch 50 --batch_size 32
+# Train on RAVDESS
+python -m src.training.main --mode train --data RAVDESS --feature_type FUSION --epoch 50 --batch_size 32
+```
+
+#### Domain Adaptation Training (NEW)
+Train with domain adaptation using LMMD loss:
+```bash
+# EMODB → RAVDESS adaptation
+python -m src.training.main --mode train-lmmd --data EMODB --feature_type FUSION --epoch 100 --visualize
+
+# RAVDESS → EMODB adaptation
+python -m src.training.main --mode train-lmmd --data RAVDESS --feature_type FUSION --epoch 100 --visualize
+
+# Customize LMMD weight
+python -m src.training.main --mode train-lmmd --data EMODB --feature_type FUSION --lmmd_weight 0.3 --visualize
 ```
 
 ### 3. Testing
 
-Test the trained model:
+#### Same-Corpus Testing
+Test the trained model on the same dataset:
 ```bash
-# Same-corpus testing
+# Test on EMODB
 python -m src.training.main --mode test --data EMODB --feature_type FUSION --test_path ./test_models/EMODB/FUSION
 
-# Cross-corpus testing (train on EMODB, test on IEMOCAP)
-python -m src.training.main --mode test --data IEMOCAP --feature_type FUSION --test_path ./test_models/EMODB/FUSION --source_data EMODB
+# Test on RAVDESS
+python -m src.training.main --mode test --data RAVDESS --feature_type FUSION --test_path ./test_models/RAVDESS/FUSION
+```
+
+#### Cross-Corpus Testing (Improved)
+Test a model trained on one dataset against another dataset:
+```bash
+# Train on EMODB, test on RAVDESS
+python -m src.training.main --mode test-cross-corpus --data EMODB --feature_type FUSION --test_path ./test_models/EMODB/FUSION/ --visualize
+
+# Train on RAVDESS, test on EMODB
+python -m src.training.main --mode test-cross-corpus --data RAVDESS --feature_type FUSION --test_path ./test_models/RAVDESS/FUSION/ --visualize
 ```
 
 ## 📊 Model Performance
@@ -113,20 +142,6 @@ python -m src.training.main --mode test --data IEMOCAP --feature_type FUSION --t
 | Neutral  | 0.84      | 0.89    | 0.86      | 79       |
 | Sad      | 1.00      | 0.90    | 0.95      | 62       |
 
-Key observations:
-- Best performance on "sad" emotions (95% F1-score)
-- Strong performance across most emotions
-- Lower precision for "happy" emotions despite high recall
-- Balanced precision-recall trade-off for most emotions
-
-## 📝 Notes
-
-- The FUSION model combines LogMel spectrograms (128 features) and HuBERT embeddings (768 features) for a total of 896 features per sample
-- Model architecture uses dilated convolutional layers for better temporal feature extraction
-- K-fold cross-validation (k=2) is used during training
-- Cross-corpus evaluation is supported between EMODB and IEMOCAP with emotion mapping
-- Results are saved in both .h5 (model weights) and .xlsx (evaluation metrics) formats
-
 ## 🔄 Cross-Corpus Evaluation
 
 Cross-corpus evaluation is a crucial aspect of our system that tests the model's ability to generalize across different datasets. This is important because:
@@ -136,27 +151,73 @@ Cross-corpus evaluation is a crucial aspect of our system that tests the model's
 3. **Generalization Assessment**: Measures how well the model performs on unseen data from different sources
 
 ### Supported Dataset Pairs
-- EMODB ↔ IEMOCAP
-- EMODB ↔ RAVDE
-- IEMOCAP ↔ RAVDE
+- EMODB ↔ RAVDESS
 
 ### Emotion Mapping
 The system automatically maps emotions between datasets:
-- EMODB "boredom" → IEMOCAP "neutral"
-- IEMOCAP "excited" → EMODB "happy"
-- IEMOCAP "frustrated" → EMODB "angry"
-- IEMOCAP "surprised" → EMODB "neutral"
 
-### Usage
-To perform cross-corpus evaluation:
-1. Train the model on one dataset (e.g., EMODB)
-2. Test it on another dataset (e.g., IEMOCAP) using the `--source_data` parameter
-3. The system will automatically map emotions between datasets
+**EMODB → RAVDESS mapping:**
+- "angry" → ["angry"]
+- "boredom" → ["neutral", "calm"]
+- "disgust" → ["disgust"]
+- "fear" → ["fear"]
+- "happy" → ["happy"]
+- "neutral" → ["neutral"]
+- "sad" → ["sad"]
 
-The FUSION approach (LogMel + HuBERT) is particularly effective for cross-corpus evaluation because:
-- LogMel features capture acoustic characteristics that are consistent across datasets
-- HuBERT embeddings provide robust semantic representations that generalize well
-- The combination of both feature types helps the model learn more robust patterns
+**RAVDESS → EMODB mapping:**
+- "angry" → ["angry"]
+- "calm" → ["neutral", "boredom"]
+- "disgust" → ["disgust"]
+- "fear" → ["fear"]
+- "happy" → ["happy"]
+- "neutral" → ["neutral"]
+- "sad" → ["sad"]
+- "surprised" → ["fear"]
+
+### Enhanced Cross-Corpus Features
+
+The system now supports improved cross-corpus capabilities:
+
+1. **Automatic Data Processing**: The system handles different dataset structures automatically
+2. **Smart Weight Loading**: Adapts to different model architectures during cross-corpus testing
+3. **Visualization**: Generates confusion matrices to analyze performance
+4. **Many-to-One/One-to-Many Mappings**: Supports mapping one emotion to multiple target emotions
+
+## 🔬 Domain Adaptation with LMMD (NEW)
+
+This project now includes Local Maximum Mean Discrepancy (LMMD) loss for domain adaptation, which:
+
+- Aligns feature distributions between source and target domains
+- Performs class-conditional alignment for better emotion recognition
+- Improves cross-corpus performance without requiring target domain labels
+- Uses weighted LMMD to balance the contribution of classification and adaptation losses
+
+### How LMMD Works
+
+LMMD measures and minimizes the difference between probability distributions of source and target domains in a reproducing kernel Hilbert space (RKHS), with class-specific alignment.
+
+The loss function:
+- Utilizes Gaussian kernels to measure similarity in the feature space 
+- Computes class-conditional distribution distances
+- Updates pseudo-labels during training to improve alignment
+- Combines standard classification loss with the LMMD adaptation loss
+
+### Benefits
+
+- Reduces domain shift between different speech emotion datasets
+- Preserves emotion-specific characteristics across different languages/datasets
+- Improves generalization to new, unseen datasets
+- Maintains discriminative power for emotion classification
+
+## 📝 Notes
+
+- The FUSION model combines LogMel spectrograms (128 features) and HuBERT embeddings (768 features) for a total of 896 features per sample
+- Model architecture uses dilated convolutional layers for better temporal feature extraction
+- K-fold cross-validation (k=2) is used during training
+- Cross-corpus evaluation is supported between EMODB and RAVDESS with emotion mapping
+- Results are saved in both .h5 (model weights) and .xlsx (evaluation metrics) formats
+- LMMD loss enables domain adaptation for better cross-corpus performance
 
 ## 📄 License
 
