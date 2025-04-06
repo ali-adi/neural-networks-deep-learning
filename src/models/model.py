@@ -3,22 +3,56 @@
 model.py
 
 DESCRIPTION:
-Implements a DTPM (Discriminant Temporal Pyramid Matching) + Attention-based
-architecture for Speech Emotion Recognition (SER).
+------------
+Defines the core architecture and training logic for the Speech Emotion Recognition (SER) model
+using a combination of Discriminant Temporal Pyramid Matching (DTPM) and an attention-based
+feature aggregation mechanism.
 
-The model uses:
-- Temporal convolution blocks with dilation for wide receptive fields (TCN style)
-- Bidirectional modeling (forward and backward streams)
-- Gated residual connections to preserve feature identity
-- Weighted feature aggregation via learnable attention
-- Cross-validation training and evaluation support
+This model is designed to extract temporal and discriminative patterns from speech signals,
+enhanced with bidirectional temporal modeling and label smoothing for better generalization.
 
-Key research-oriented features:
-- Temporal modeling similar to TM-Net
-- Attention-based aggregation (akin to self-attention)
-- Label smoothing for generalization
-- Excel output for evaluation metrics (saved in result_path/ under dataset-specific folders)
+WHAT THIS SCRIPT DOES:
+-----------------------
+1. Builds a deep temporal convolutional network with dilated convolutions (TCN-style)
+2. Incorporates bidirectional streams (forward and reversed input)
+3. Applies gated residual connections for better feature retention
+4. Aggregates features using a learnable attention layer
+5. Supports training using k-fold cross-validation
+6. Saves performance metrics (confusion matrix + classification report) as Excel files
+
+MODEL COMPONENTS:
+------------------
+- `TemporalConvNet`   : Stacked temporal blocks with increasing dilation for long-range temporal modeling
+- `WeightLayer`       : Learnable attention weights for weighted feature aggregation
+- `smooth_labels()`   : Applies label smoothing to enhance generalization
+- `SpeechEmotionModel`: High-level model wrapper that handles training, evaluation, and I/O
+
+KEY FEATURES:
+-------------
+- Uses `categorical_crossentropy` for multi-class classification
+- Implements gated skip connections (similar to TCN/ResNet)
+- Output metrics include accuracy, confusion matrix, and classification report
+- Saves best-performing fold weights in `test_models/` for later evaluation
+
+HOW TO USE THIS FILE:
+----------------------
+This script is not meant to be executed directly.
+It is imported and used by `main.py` during both training and testing:
+
+    from src.models.model import SpeechEmotionModel
+
+SUPPORTED INPUT SHAPES:
+------------------------
+- Input: 3D tensors shaped as (time_steps, feature_dim)
+  e.g., (300, 96) for MFCC, or (300, 768) for HuBERT
+
+NOTES:
+------
+- Works with both standard features (MFCC, Log-Mel) and self-supervised embeddings (HuBERT)
+- Automatically handles varying sequence lengths using `pad_sequences`
+- Can be extended with custom loss functions like LMMD for domain adaptation (future scope)
 """
+
 
 # Suppress unnecessary warnings for cleaner output
 import os
@@ -45,6 +79,7 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import callbacks
 from tensorflow.keras.activations import sigmoid
 from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 # Evaluation tools
 from sklearn.metrics import confusion_matrix, classification_report
@@ -108,9 +143,16 @@ class WeightLayer(tf.keras.layers.Layer):
         return tf.squeeze(x, axis=-1)
 
 def smooth_labels(labels, factor=0.1):
+    # If not one-hot encoded, convert using to_categorical
+    if len(labels.shape) == 1:
+        labels = to_categorical(labels, num_classes=np.max(labels) + 1)
+
+    labels = labels.astype(np.float32)
     labels *= (1 - factor)
     labels += (factor / labels.shape[1])
     return labels
+
+
 
 class SpeechEmotionModel:
     def __init__(self, input_shape, class_labels, args):
@@ -151,6 +193,13 @@ class SpeechEmotionModel:
 
     def train(self, x, y):
         print("🎯 Starting k-fold training...")
+         # Pad sequences if needed
+        if isinstance(x, list) or len(x.shape) != 3:
+            x = pad_sequences(x, padding='post', dtype='float32')
+
+        # Update input shape AFTER padding
+        self.input_shape = x.shape[1:]
+
         save_dir = self.args.model_path
         os.makedirs(save_dir, exist_ok=True)
         os.makedirs(self.result_dir, exist_ok=True)
@@ -161,6 +210,7 @@ class SpeechEmotionModel:
 
         for fold_idx, (train_idx, test_idx) in enumerate(kfold.split(x, y), 1):
             print(f"🔁 Fold {fold_idx}/{self.args.split_fold}")
+
             self.create_model()
             y_train_smoothed = smooth_labels(copy.deepcopy(y[train_idx]), 0.1)
             fold_folder = os.path.join(save_dir, f"{self.args.data}_{self.args.random_seed}_{self.now}")
@@ -205,10 +255,30 @@ class SpeechEmotionModel:
         # Save best weight to test_models
         if self.best_fold_weight_path:
             best_name = os.path.basename(self.best_fold_weight_path)
-            shutil.copy(self.best_fold_weight_path, os.path.join(test_model_dir, best_name))
-            print(f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to test_models/{self.args.data}/{best_name}")
+
+            feature_subfolder = os.path.join("test_models", self.args.data, self.args.feature_type.upper())
+
+            # FIX: Remove any existing file with the same path before creating folder
+            if os.path.exists(feature_subfolder) and not os.path.isdir(feature_subfolder):
+                os.remove(feature_subfolder)
+
+            os.makedirs(feature_subfolder, exist_ok=True)
+            # Add feature_type-specific subfolder (e.g., MFCC or LOGMEL)
+            #feature_subfolder = os.path.join("test_models", self.args.data, self.args.feature_type.upper())
+            #os.makedirs(feature_subfolder, exist_ok=True)
+
+            # Save the weight
+            shutil.copy(self.best_fold_weight_path, os.path.join(feature_subfolder, best_name))
+            print(f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to {feature_subfolder}/{best_name}")
 
     def evaluate_test(self, x_test, y_test, path):
+         # Pad test data if needed
+        if isinstance(x_test, list) or len(x_test.shape) != 3:
+            x_test = pad_sequences(x_test, padding='post', dtype='float32')
+
+        # Update input shape BEFORE creating model
+        self.input_shape = x_test.shape[1:]
+
         self.create_model()
         self.model.load_weights(path)
         loss, acc = self.model.evaluate(x_test, y_test, verbose=1)
@@ -221,7 +291,22 @@ class SpeechEmotionModel:
             target_names=self.class_labels,
             zero_division=0
         ))
-        result_file = os.path.join(self.result_dir, f"{self.args.data}_test_{round(acc * 100, 2)}_{self.args.random_seed}_{self.now}.xlsx")
+        # Create a result subfolder for the feature type (e.g., results/EMODB/MFCC/)
+        result_subfolder = os.path.join("test_models", self.args.data, self.args.feature_type.upper())
+
+        # Fix: if a file (not a folder) exists at this path, remove it first
+        if os.path.exists(result_subfolder) and not os.path.isdir(result_subfolder):
+            os.remove(result_subfolder)
+
+        os.makedirs(result_subfolder, exist_ok=True)
+
+        #result_subfolder = os.path.join(self.result_dir, self.args.feature_type.upper())
+        #os.makedirs(result_subfolder, exist_ok=True)
+
+        # Create a descriptive filename like EMODB_MFCC_test_85.5_46_2025-03-28_17-24-59.xlsx
+        filename = f"{self.args.data}_{self.args.feature_type.upper()}_test_{round(acc * 100, 2)}_{self.args.random_seed}_{self.now}.xlsx"
+        result_file = os.path.join(result_subfolder, filename)
+
         print(f"📁 Saving evaluation results to: {result_file}")
         writer = pd.ExcelWriter(result_file)
         df_cm = pd.DataFrame(confusion_matrix(np.argmax(y_test, axis=1), np.argmax(y_pred, axis=1)), columns=self.class_labels, index=self.class_labels)
