@@ -77,20 +77,20 @@ This will automatically:
 Train the model with FUSION features:
 ```bash
 # Train on EMODB
-python -m src.training.main --mode train --data EMODB --feature_type FUSION --epoch 50 --batch_size 32
+python -m src.training.main --mode train --data EMODB --feature_type FUSION --epoch 100 --batch_size 32
 
 # Train on RAVDESS
-python -m src.training.main --mode train --data RAVDESS --feature_type FUSION --epoch 50 --batch_size 32
+python -m src.training.main --mode train --data RAVDESS --feature_type FUSION --epoch 100 --batch_size 32
 ```
 
 #### Domain Adaptation Training (NEW)
 Train with domain adaptation using LMMD loss:
 ```bash
 # EMODB → RAVDESS adaptation
-python -m src.training.main --mode train-lmmd --data EMODB --feature_type FUSION --epoch 100 --visualize
+python -m src.training.main --mode train-lmmd --data EMODB --feature_type FUSION --epoch 200 --visualize
 
 # RAVDESS → EMODB adaptation
-python -m src.training.main --mode train-lmmd --data RAVDESS --feature_type FUSION --epoch 100 --visualize
+python -m src.training.main --mode train-lmmd --data RAVDESS --feature_type FUSION --epoch 200 --visualize
 
 # Customize LMMD weight
 python -m src.training.main --mode train-lmmd --data EMODB --feature_type FUSION --lmmd_weight 0.3 --visualize
