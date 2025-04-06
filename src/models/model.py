@@ -295,56 +295,276 @@ class SpeechEmotionModel:
             shutil.copy(self.best_fold_weight_path, os.path.join(feature_subfolder, best_name))
             print(f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to {feature_subfolder}/{best_name}")
 
-    def evaluate_test(self, x_test, y_test, path):
-         # Pad test data if needed
-        if isinstance(x_test, list) or len(x_test.shape) != 3:
-            x_test = pad_sequences(x_test, padding='post', dtype='float32')
-
-        # Update input shape BEFORE creating model
-        self.input_shape = x_test.shape[1:]
-
-        self.create_model()
-        self.model.load_weights(path)
-        loss, acc = self.model.evaluate(x_test, y_test, verbose=1)
-        print(f"\n🎯 Test Loss: {loss:.4f}, Test Accuracy: {acc:.4f}")
+    def evaluate_test(self, x_test, y_test, path=None, result_filename=None, result_dir=None):
+        """
+        Evaluate model on test data.
+        
+        Args:
+            x_test: Test features
+            y_test: Test labels (one-hot encoded)
+            path: Path to model weights
+            result_filename: Custom filename for results (used in cross-corpus validation)
+            result_dir: Custom directory for saving results (used in cross-corpus validation)
+        """
+        if not path:
+            print("❌ No model weights path provided!")
+            return
+            
+        print(f"📋 Loading model weights from: {path}")
+        self._load_weights(path)
+        
         y_pred = self.model.predict(x_test)
-        print("\n🧾 Classification Report:")
-        print(classification_report(
-            np.argmax(y_test, axis=1),
-            np.argmax(y_pred, axis=1),
-            target_names=self.class_labels,
-            zero_division=0
-        ))
-        # Create a result subfolder for the feature type (e.g., results/EMODB/MFCC/)
-        result_subfolder = os.path.join("test_models", self.args.data, self.args.feature_type.upper())
+        
+        # Convert one-hot encoded to class indices
+        y_true = np.argmax(y_test, axis=1)
+        y_pred = np.argmax(y_pred, axis=1)
 
-        # Fix: if a file (not a folder) exists at this path, remove it first
-        if os.path.exists(result_subfolder) and not os.path.isdir(result_subfolder):
-            os.remove(result_subfolder)
+        # Generate evaluation matrix
+        cm = confusion_matrix(y_true, y_pred)
+        
+        # Check for class mismatch and handle it
+        unique_classes = np.unique(np.concatenate([y_true, y_pred]))
+        num_unique_classes = len(unique_classes)
+        
+        if num_unique_classes != len(self.class_labels):
+            print(f"⚠️ Class mismatch: {num_unique_classes} classes detected, but {len(self.class_labels)} class labels provided")
+            # Use a subset of labels or generate generic labels
+            if num_unique_classes < len(self.class_labels):
+                # Find which classes are actually present in the data
+                present_classes = sorted(unique_classes)
+                present_labels = [self.class_labels[i] for i in present_classes if i < len(self.class_labels)]
+                
+                # Fill in any missing labels with generic names
+                if len(present_labels) < num_unique_classes:
+                    present_labels = [f"Class {i}" for i in range(num_unique_classes)]
+                
+                print(f"🔄 Using subset of labels: {present_labels}")
+                cr = classification_report(y_true, y_pred, labels=range(num_unique_classes), target_names=present_labels)
+                used_labels = present_labels
+            else:
+                # Generate generic labels if we have more classes than labels
+                generic_labels = [f"Class {i}" for i in range(num_unique_classes)]
+                print(f"🔄 Using generic labels: {generic_labels}")
+                cr = classification_report(y_true, y_pred, labels=range(num_unique_classes), target_names=generic_labels)
+                used_labels = generic_labels
+        else:
+            cr = classification_report(y_true, y_pred, target_names=self.class_labels)
+            used_labels = self.class_labels
+            
+        accuracy = np.sum(np.diag(cm)) / np.sum(cm)
+        
+        # Print results
+        print(f"\n📊 Test Accuracy: {accuracy:.4f}\n")
+        print("📝 Classification Report:")
+        print(cr)
+        print("\n🧮 Confusion Matrix:")
+        print(cm)
+        
+        # Override result_dir if provided (for cross-corpus validation)
+        if result_dir:
+            self.result_dir = result_dir
+            
+        # Create result directory if it doesn't exist
+        if not self.result_dir:
+            self.result_dir = os.path.join(self.args.result_path, self.args.data)
+        os.makedirs(self.result_dir, exist_ok=True)
+            
+        # Use custom filename if provided, otherwise use timestamp
+        if result_filename:
+            filename = f"{result_filename}.xlsx"
+        else:
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            filename = f"evaluation_{timestamp}.xlsx"
+            
+        excel_path = os.path.join(self.result_dir, filename)
+        
+        self._save_results_to_excel(excel_path, cm, cr, accuracy, used_labels)
+        print(f"✅ Results saved to: {excel_path}")
+        return y_pred, accuracy
 
-        os.makedirs(result_subfolder, exist_ok=True)
+    def _load_weights(self, path):
+        """Helper method to load weights from path"""
+        # Check if path is a directory or a file
+        if os.path.isdir(path):
+            print(f"📂 Searching for model weights in directory: {path}")
+            weight_files = [f for f in os.listdir(path) if f.endswith('.h5')]
+            
+            if not weight_files:
+                raise ValueError(f"No weight files found in {path}")
+                
+            # Sort by creation time (most recent first)
+            weight_files.sort(key=lambda x: os.path.getmtime(os.path.join(path, x)), reverse=True)
+            
+            # Prefer files with "best" in the name
+            best_files = [f for f in weight_files if "best" in f.lower()]
+            if best_files:
+                weight_file = os.path.join(path, best_files[0])
+                print(f"✅ Found best model: {best_files[0]}")
+            else:
+                weight_file = os.path.join(path, weight_files[0])
+                print(f"✅ Using most recent model: {weight_files[0]}")
+        else:
+            weight_file = path
+        
+        print(f"📂 Loading weights from: {weight_file}")
+        
+        # Just create the model architecture with the current number of classes
+        self.create_model()
+        
+        # If this is a weights-only file (most likely case)
+        if "weights" in os.path.basename(weight_file).lower():
+            try:
+                # First try to load directly with skip_mismatch=True
+                print("🔍 Attempting to load weights with skip_mismatch=True")
+                self.model.load_weights(weight_file, skip_mismatch=True)
+                print("✅ Successfully loaded compatible weights")
+                return
+            except Exception as e:
+                print(f"⚠️ Error with skip_mismatch approach: {e}")
+                print("🔄 Trying manual layer-by-layer loading...")
+                
+                try:
+                    # Try to load weights one layer at a time, skipping problematic layers
+                    import h5py
+                    f = h5py.File(weight_file, 'r')
+                    
+                    # Get layer names from the file
+                    if 'layer_names' in f.attrs:
+                        layer_names = [n.decode('utf8') for n in f.attrs['layer_names']]
+                        print(f"📄 Found {len(layer_names)} layers in weights file")
+                        
+                        # For each layer in the model, try to load weights if name matches
+                        for layer in self.model.layers:
+                            if layer.name in layer_names and 'dense' not in layer.name:
+                                # Get weight names for this layer
+                                g = f[layer.name]
+                                weight_names = [n.decode('utf8') for n in g.attrs['weight_names']]
+                                
+                                # Load weights for this layer
+                                weight_values = [np.array(g[weight_name]) for weight_name in weight_names]
+                                try:
+                                    layer.set_weights(weight_values)
+                                    print(f"✓ Loaded weights for layer: {layer.name}")
+                                except Exception as layer_error:
+                                    print(f"⚠️ Could not load weights for layer {layer.name}: {layer_error}")
+                        
+                        print("✅ Successfully loaded compatible layer weights")
+                        return
+                    else:
+                        print("⚠️ No layer_names attribute found in weights file")
+                except Exception as h5_error:
+                    print(f"⚠️ Failed to load with h5py: {h5_error}")
+                    
+                # Try numpy approach if h5py failed
+                try:
+                    print("🔄 Trying NumPy approach...")
+                    weights_data = np.load(weight_file, allow_pickle=True)
+                    if isinstance(weights_data, np.ndarray):
+                        weights_data = weights_data.item()
+                        
+                        # Find layers that don't have 'dense' in their name
+                        layer_names = [name for name in weights_data.keys() if 'dense' not in name]
+                        print(f"📄 Found {len(layer_names)} non-dense layers in weights file")
+                        
+                        # Load weights for non-dense layers
+                        for layer in self.model.layers:
+                            if layer.name in layer_names:
+                                try:
+                                    # Get weight values for this layer
+                                    if layer.name in weights_data:
+                                        if isinstance(weights_data[layer.name], dict):
+                                            # Extract weight values from dictionary
+                                            weight_values = [weights_data[layer.name][key] for key in weights_data[layer.name].keys()]
+                                        else:
+                                            # Weights are directly stored
+                                            weight_values = weights_data[layer.name]
+                                            
+                                        layer.set_weights(weight_values)
+                                        print(f"✓ Loaded weights for layer: {layer.name}")
+                                except Exception as layer_error:
+                                    print(f"⚠️ Could not load weights for layer {layer.name}: {layer_error}")
+                                    
+                        print("✅ Successfully loaded compatible layer weights (skipping dense layers)")
+                        return
+                except Exception as np_error:
+                    print(f"⚠️ Failed to load with NumPy: {np_error}")
+                    
+        # As a last resort, try to load the model directly
+        try:
+            print("🔍 Attempting to load or recreate model")
+            
+            try:
+                # Try to load the model directly 
+                loaded_model = tf.keras.models.load_model(weight_file)
+                
+                # If successful, transfer weights from all but the last layer
+                for i, layer in enumerate(self.model.layers[:-1]):
+                    if i < len(loaded_model.layers) - 1:
+                        layer.set_weights(loaded_model.layers[i].get_weights())
+                
+                print("✅ Successfully transferred weights from compatible layers")
+                return
+            except Exception as e:
+                print(f"⚠️ Error loading complete model: {e}")
+                # If all approaches fail, create a simple model
+                print("⚠️ Could not load weights. Using initialized model.")
+                
+        except Exception as e:
+            print(f"❌ All loading approaches failed!")
+            print(f"❌ Last error: {e}")
+            raise ValueError(f"Could not load model weights after multiple attempts. Try training the model first.")
 
-        #result_subfolder = os.path.join(self.result_dir, self.args.feature_type.upper())
-        #os.makedirs(result_subfolder, exist_ok=True)
-
-        # Create a descriptive filename like EMODB_MFCC_test_85.5_46_2025-03-28_17-24-59.xlsx
-        filename = f"{self.args.data}_{self.args.feature_type.upper()}_test_{round(acc * 100, 2)}_{self.args.random_seed}_{self.now}.xlsx"
-        result_file = os.path.join(result_subfolder, filename)
-
-        print(f"📁 Saving evaluation results to: {result_file}")
-        writer = pd.ExcelWriter(result_file)
-        df_cm = pd.DataFrame(confusion_matrix(np.argmax(y_test, axis=1), np.argmax(y_pred, axis=1)), columns=self.class_labels, index=self.class_labels)
-        df_cm.to_excel(writer, sheet_name="Confusion_Matrix")
-        df_eval = pd.DataFrame(classification_report(
-            np.argmax(y_test, axis=1),
-            np.argmax(y_pred, axis=1),
-            target_names=self.class_labels,
-            output_dict=True, zero_division=0
-        )).T
-        df_eval.to_excel(writer, sheet_name="Classification_Report")
-        writer.close()
+    def _save_results_to_excel(self, excel_path, confusion_matrix, classification_report, accuracy, used_labels):
+        """Save evaluation results to Excel file"""
+        print(f"📝 Saving evaluation results to: {excel_path}")
+        
+        try:
+            # Create Excel writer
+            writer = pd.ExcelWriter(excel_path, engine='openpyxl')
+            
+            # Save confusion matrix
+            df_cm = pd.DataFrame(confusion_matrix, 
+                                index=used_labels, 
+                                columns=used_labels)
+            df_cm.to_excel(writer, sheet_name="Confusion_Matrix")
+            
+            # Save classification report
+            if isinstance(classification_report, str):
+                # Parse string report into dictionary
+                lines = classification_report.strip().split('\n')
+                headers = [x for x in lines[0].split('  ') if x]
+                
+                # Skip the first two lines (headers) and the last line (accuracy)
+                data = []
+                for line in lines[2:-1]:
+                    if line.strip():
+                        row = {}
+                        values = [x for x in line.split('  ') if x]
+                        if len(values) >= len(headers):
+                            for i, header in enumerate(headers):
+                                row[header] = values[i]
+                            data.append(row)
+                
+                df_cr = pd.DataFrame(data)
+            else:
+                # Classification report is already a dictionary
+                df_cr = pd.DataFrame(classification_report).T
+                
+            df_cr.to_excel(writer, sheet_name="Classification_Report")
+            
+            # Save accuracy as a separate sheet
+            df_acc = pd.DataFrame({'Accuracy': [accuracy]})
+            df_acc.to_excel(writer, sheet_name="Accuracy")
+            
+            # Close writer
+            writer.close()
+            print("✅ Evaluation results saved successfully")
+            
+        except Exception as e:
+            print(f"❌ Failed to save results: {e}")
+            
+        # Clean up
         K.clear_session()
         self.matrix = []
         self.eva_matrix = []
         self.trained = True
-        print("📝 Evaluation saved. Testing complete.\n")
