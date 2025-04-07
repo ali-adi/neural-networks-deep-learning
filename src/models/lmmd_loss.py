@@ -28,9 +28,9 @@ LMMD = sum_c weight_c * MMD^2(Ds_c, Dt_c)
 - weight_c: weight for class c (based on sample count)
 """
 
+import numpy as np
 import tensorflow as tf
 import tensorflow.keras.backend as K
-import numpy as np
 
 
 def gaussian_kernel(source, target, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
@@ -71,9 +71,7 @@ def gaussian_kernel(source, target, kernel_mul=2.0, kernel_num=5, fix_sigma=None
     return kernel_val
 
 
-def mmd_loss(
-    source_features, target_features, kernel_mul=2.0, kernel_num=5, fix_sigma=None
-):
+def mmd_loss(source_features, target_features, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
     """
     Calculate Maximum Mean Discrepancy (MMD) between source and target feature distributions
 
@@ -102,12 +100,7 @@ def mmd_loss(
     YX = kernels[batch_size:, :batch_size]
 
     # Calculate MMD
-    loss = (
-        tf.reduce_mean(XX)
-        + tf.reduce_mean(YY)
-        - tf.reduce_mean(XY)
-        - tf.reduce_mean(YX)
-    )
+    loss = tf.reduce_mean(XX) + tf.reduce_mean(YY) - tf.reduce_mean(XY) - tf.reduce_mean(YX)
 
     return loss
 
@@ -168,12 +161,8 @@ def lmmd_loss(
         target_features_c = target_features * target_mask
 
         # Normalize to handle imbalance
-        source_weight = 1.0 / (
-            tf.maximum(source_count, 1) / tf.cast(source_batch_size, tf.float32)
-        )
-        target_weight = 1.0 / (
-            tf.maximum(target_count, 1) / tf.cast(target_batch_size, tf.float32)
-        )
+        source_weight = 1.0 / (tf.maximum(source_count, 1) / tf.cast(source_batch_size, tf.float32))
+        target_weight = 1.0 / (tf.maximum(target_count, 1) / tf.cast(target_batch_size, tf.float32))
 
         # Calculate class-conditional MMD
         mmd_c = mmd_loss(
@@ -193,9 +182,7 @@ def lmmd_loss(
     return loss
 
 
-def get_lmmd_loss(
-    num_classes, kernel_mul=2.0, kernel_num=5, fix_sigma=None, weight=1.0
-):
+def get_lmmd_loss(num_classes, kernel_mul=2.0, kernel_num=5, fix_sigma=None, weight=1.0):
     """
     Create a TensorFlow-compatible loss function for LMMD
 
@@ -238,15 +225,7 @@ def get_lmmd_loss(
 
 # Keras custom loss function wrapper
 class LMMDLoss(tf.keras.losses.Loss):
-    def __init__(
-        self,
-        num_classes,
-        weight=1.0,
-        kernel_mul=2.0,
-        kernel_num=5,
-        fix_sigma=None,
-        **kwargs
-    ):
+    def __init__(self, num_classes, weight=1.0, kernel_mul=2.0, kernel_num=5, fix_sigma=None, **kwargs):
         super(LMMDLoss, self).__init__(**kwargs)
         self.num_classes = num_classes
         self.weight = weight

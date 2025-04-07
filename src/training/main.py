@@ -57,12 +57,13 @@ NOTES:
 - Automatically adjusts input shape and validates GPU availability
 """
 
-import os
-import numpy as np
 import argparse
-import shutil
 import datetime
-from sklearn.metrics import confusion_matrix, classification_report
+import os
+import shutil
+
+import numpy as np
+from sklearn.metrics import classification_report, confusion_matrix
 
 # Suppress warnings and TensorFlow logs for clean CLI experience
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -85,9 +86,7 @@ print("\n🖥️  Device Configuration:")
 try:
     # List available devices
     physical_devices = tf.config.list_physical_devices()
-    print(
-        "   Available physical devices:", [device.name for device in physical_devices]
-    )
+    print("   Available physical devices:", [device.name for device in physical_devices])
 
     # Try to create a simple operation on GPU
     with tf.device("/device:GPU:0"):
@@ -103,9 +102,10 @@ except Exception as e:
     print(f"   ⚠️ Could not configure GPU: {e}")
     print("   ℹ️ Falling back to CPU")
 
-from src.models.model import SpeechEmotionModel
 from tensorflow.keras.utils import to_categorical
+
 from src.data_processing.load_dataset import load_fused_tensorflow_dataset
+from src.models.model import SpeechEmotionModel
 
 # Label sets for supported datasets
 EMODB_LABELS = ("angry", "boredom", "disgust", "fear", "happy", "neutral", "sad")
@@ -163,32 +163,20 @@ def load_data_by_type(args):
         }
 
         if args.feature_type not in feature_type_map:
-            raise ValueError(
-                "Unsupported feature type. Must be MFCC, LOGMEL, HUBERT, or FUSION."
-            )
+            raise ValueError("Unsupported feature type. Must be MFCC, LOGMEL, HUBERT, or FUSION.")
 
         dir_name = feature_type_map[args.feature_type]
-        data_path = os.path.join(
-            "data", "features", args.feature_type, dir_name, f"{args.data}.npy"
-        )
+        data_path = os.path.join("data", "features", args.feature_type, dir_name, f"{args.data}.npy")
 
         print(f"\U0001F4E6 Data source: {data_path}")
         loaded_data = np.load(data_path, allow_pickle=True).item()
-        if (
-            not isinstance(loaded_data, dict)
-            or "x" not in loaded_data
-            or "y" not in loaded_data
-        ):
+        if not isinstance(loaded_data, dict) or "x" not in loaded_data or "y" not in loaded_data:
             raise ValueError(f"Invalid data format in {data_path}")
         x_source = loaded_data["x"]
         y_source = loaded_data["y"]
 
         # Special handling for HUBERT features to ensure they have the correct shape
-        if (
-            args.feature_type == "HUBERT"
-            and len(x_source.shape) == 1
-            and x_source.dtype == object
-        ):
+        if args.feature_type == "HUBERT" and len(x_source.shape) == 1 and x_source.dtype == object:
             # For HUBERT, if it's a 1D object array of features, we can use it directly
             # The model will handle reshaping in the create_model function
             print(f"✅ Using HUBERT features as 1D embeddings")
@@ -197,9 +185,7 @@ def load_data_by_type(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Train or test a temporal conv-based speech emotion model."
-    )
+    parser = argparse.ArgumentParser(description="Train or test a temporal conv-based speech emotion model.")
     parser.add_argument(
         "--mode",
         type=str,
@@ -225,9 +211,7 @@ def main():
         default="./test_models/EMODB",
         help="Path to load test model weights or folder containing .h5 files.",
     )
-    parser.add_argument(
-        "--data", type=str, default="EMODB", help="Dataset name: EMODB or RAVDESS"
-    )
+    parser.add_argument("--data", type=str, default="EMODB", help="Dataset name: EMODB or RAVDESS")
     parser.add_argument(
         "--feature_type",
         type=str,
@@ -249,18 +233,10 @@ def main():
         default=32,
         help="Smaller batch size to help generalization.",
     )
-    parser.add_argument(
-        "--epoch", type=int, default=300, help="Number of epochs for training."
-    )
-    parser.add_argument(
-        "--dropout", type=float, default=0.4, help="Dropout rate to reduce overfitting."
-    )
-    parser.add_argument(
-        "--random_seed", type=int, default=46, help="Seed for reproducibility."
-    )
-    parser.add_argument(
-        "--activation", type=str, default="relu", help="Activation function."
-    )
+    parser.add_argument("--epoch", type=int, default=300, help="Number of epochs for training.")
+    parser.add_argument("--dropout", type=float, default=0.4, help="Dropout rate to reduce overfitting.")
+    parser.add_argument("--random_seed", type=int, default=46, help="Seed for reproducibility.")
+    parser.add_argument("--activation", type=str, default="relu", help="Activation function.")
     parser.add_argument(
         "--filter_size",
         type=int,
@@ -273,12 +249,8 @@ def main():
         default=8,
         help="Maximum power-of-two dilation size.",
     )
-    parser.add_argument(
-        "--kernel_size", type=int, default=3, help="Kernel size for convolution layers."
-    )
-    parser.add_argument(
-        "--stack_size", type=int, default=3, help="Number of temporal blocks to stack."
-    )
+    parser.add_argument("--kernel_size", type=int, default=3, help="Kernel size for convolution layers.")
+    parser.add_argument("--stack_size", type=int, default=3, help="Number of temporal blocks to stack.")
     parser.add_argument(
         "--split_fold",
         type=int,
@@ -390,9 +362,7 @@ def main():
     print(f"✅ Data loaded successfully! Shape: {x_source.shape}")
 
     print("\n🧠 Initializing model...\n")
-    model = SpeechEmotionModel(
-        input_shape=input_shape, class_labels=class_labels, args=args
-    )
+    model = SpeechEmotionModel(input_shape=input_shape, class_labels=class_labels, args=args)
 
     if args.mode == "train":
         print("🚀 Starting training...\n")
@@ -402,11 +372,7 @@ def main():
     elif args.mode == "test":
         print("🧪 Starting testing...\n")
         if os.path.isdir(args.test_path):
-            h5_files = [
-                os.path.join(args.test_path, f)
-                for f in os.listdir(args.test_path)
-                if f.endswith(".h5")
-            ]
+            h5_files = [os.path.join(args.test_path, f) for f in os.listdir(args.test_path) if f.endswith(".h5")]
             if not h5_files:
                 raise FileNotFoundError(f"No .h5 files found in {args.test_path}")
             args.test_path = max(h5_files, key=os.path.getmtime)
@@ -424,13 +390,9 @@ def main():
         elif args.data == "RAVDESS":
             args.test_data = "EMODB"
         else:
-            raise ValueError(
-                f"Unsupported dataset: {args.data}. Must be either EMODB or RAVDESS."
-            )
+            raise ValueError(f"Unsupported dataset: {args.data}. Must be either EMODB or RAVDESS.")
 
-        print(
-            f"\n🔄 Cross-corpus validation: Training on {args.data}, testing on {args.test_data}"
-        )
+        print(f"\n🔄 Cross-corpus validation: Training on {args.data}, testing on {args.test_data}")
 
         # Load the SOURCE dataset (what the model was trained on)
         print(f"📝 SOURCE dataset: {args.data} (training data)")
@@ -441,9 +403,7 @@ def main():
         target_class_labels = LABEL_DICT[args.test_data]
 
         # Load target dataset for testing
-        x_target, y_target = load_data_by_type(
-            argparse.Namespace(**{**vars(args), "data": args.test_data})
-        )
+        x_target, y_target = load_data_by_type(argparse.Namespace(**{**vars(args), "data": args.test_data}))
 
         # Determine emotion mapping key
         mapping_key = f"{args.data}_TO_{args.test_data}"
@@ -456,34 +416,20 @@ def main():
             print(f"   {source} → {targets}")
 
         # Map indices to emotion names for source dataset
-        source_idx_to_emotion = {
-            i: emotion for i, emotion in enumerate(source_class_labels)
-        }
+        source_idx_to_emotion = {i: emotion for i, emotion in enumerate(source_class_labels)}
 
         # Map emotion names to indices for target dataset
-        target_emotion_to_idx = {
-            emotion: i for i, emotion in enumerate(target_class_labels)
-        }
+        target_emotion_to_idx = {emotion: i for i, emotion in enumerate(target_class_labels)}
 
         # Create mapping visualization
         print("\n🔀 Cross-corpus emotion mappings:")
         mapping_rows = []
         for source_idx, source_emotion in source_idx_to_emotion.items():
             target_emotions = emotion_map.get(source_emotion, [])
-            target_emotion_str = (
-                ", ".join(target_emotions) if target_emotions else "N/A"
-            )
-            target_indices = [
-                target_emotion_to_idx.get(e, "N/A") for e in target_emotions
-            ]
-            target_idx_str = (
-                ", ".join(str(idx) for idx in target_indices)
-                if target_indices
-                else "N/A"
-            )
-            mapping_rows.append(
-                f"   {source_idx} ({source_emotion}) → {target_idx_str} ({target_emotion_str})"
-            )
+            target_emotion_str = ", ".join(target_emotions) if target_emotions else "N/A"
+            target_indices = [target_emotion_to_idx.get(e, "N/A") for e in target_emotions]
+            target_idx_str = ", ".join(str(idx) for idx in target_indices) if target_indices else "N/A"
+            mapping_rows.append(f"   {source_idx} ({source_emotion}) → {target_idx_str} ({target_emotion_str})")
 
         # Sort and print for readability
         mapping_rows.sort()
@@ -492,14 +438,10 @@ def main():
 
         # Map numerical labels
         print("\n🔄 Mapping numerical labels...")
-        y_source_emotions = (
-            np.argmax(y_target, axis=1) if len(y_target.shape) > 1 else y_target
-        )
+        y_source_emotions = np.argmax(y_target, axis=1) if len(y_target.shape) > 1 else y_target
 
         # Create a lookup for emotion names based on indices in target dataset
-        target_idx_to_emotion = {
-            i: emotion for i, emotion in enumerate(target_class_labels)
-        }
+        target_idx_to_emotion = {i: emotion for i, emotion in enumerate(target_class_labels)}
 
         # Apply mapping and count valid/invalid mappings
         valid_count = 0
@@ -538,15 +480,11 @@ def main():
 
         print(f"   ✅ {valid_count} samples mapped successfully")
         if invalid_count > 0:
-            print(
-                f"   ⚠️ {invalid_count} samples had no valid mapping and will be excluded"
-            )
+            print(f"   ⚠️ {invalid_count} samples had no valid mapping and will be excluded")
 
             # Remove samples with invalid mappings
             if invalid_count > 0:
-                valid_indices = [
-                    i for i in range(len(y_mapped_multi)) if i not in invalid_indices
-                ]
+                valid_indices = [i for i in range(len(y_mapped_multi)) if i not in invalid_indices]
                 x_target = x_target[valid_indices]
                 y_mapped_multi = y_mapped_multi[valid_indices]
 
@@ -562,21 +500,15 @@ def main():
         y_target_mapped = to_categorical(y_mapped, num_classes=len(target_class_labels))
 
         print("\n🧠 Initializing model for evaluation...\n")
-        model = SpeechEmotionModel(
-            input_shape=x_target.shape[1:], class_labels=target_class_labels, args=args
-        )
+        model = SpeechEmotionModel(input_shape=x_target.shape[1:], class_labels=target_class_labels, args=args)
 
         # Generate unique result folder/file name
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         result_filename = f"cross_corpus_{args.data}_to_{args.test_data}_{timestamp}"
-        result_dir = os.path.join(
-            args.result_path, f"CrossCorpus/{args.data}_TO_{args.test_data}"
-        )
+        result_dir = os.path.join(args.result_path, f"CrossCorpus/{args.data}_TO_{args.test_data}")
         os.makedirs(result_dir, exist_ok=True)
 
-        print(
-            f"\n🚀 Starting cross-corpus validation ({args.data} → {args.test_data})...\n"
-        )
+        print(f"\n🚀 Starting cross-corpus validation ({args.data} → {args.test_data})...\n")
         y_pred, accuracy = model.evaluate_test(
             x_target,
             y_target_mapped,
@@ -599,18 +531,9 @@ def main():
 
                 # Determine which labels to use
                 if num_unique_classes != len(target_class_labels):
-                    print(
-                        f"⚠️ Using {num_unique_classes} labels for visualization instead of {len(target_class_labels)}"
-                    )
+                    print(f"⚠️ Using {num_unique_classes} labels for visualization instead of {len(target_class_labels)}")
                     present_classes = sorted(unique_classes)
-                    display_labels = [
-                        (
-                            target_class_labels[i]
-                            if i < len(target_class_labels)
-                            else f"Class {i}"
-                        )
-                        for i in present_classes
-                    ]
+                    display_labels = [(target_class_labels[i] if i < len(target_class_labels) else f"Class {i}") for i in present_classes]
                 else:
                     display_labels = target_class_labels
 
@@ -633,9 +556,7 @@ def main():
                 )
                 plt.xlabel("Predicted")
                 plt.ylabel("True")
-                plt.title(
-                    f"Cross-Corpus Validation: {args.data} → {args.test_data}\nAccuracy: {accuracy:.2f}"
-                )
+                plt.title(f"Cross-Corpus Validation: {args.data} → {args.test_data}\nAccuracy: {accuracy:.2f}")
 
                 # Save figure
                 viz_path = os.path.join(model.result_dir, f"{result_filename}_cm.png")
@@ -643,9 +564,7 @@ def main():
                 print(f"✅ Visualization saved to: {viz_path}")
 
             except ImportError:
-                print(
-                    "⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'"
-                )
+                print("⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'")
 
         print("\n✅ Cross-corpus validation complete!\n")
 
@@ -654,11 +573,7 @@ def main():
         print("🚀 Starting domain adaptation training with LMMD loss")
 
         # Set the target dataset - if not specified, use the opposite of source
-        target_dataset = (
-            args.target_data
-            if args.target_data
-            else ("RAVDESS" if args.data == "EMODB" else "EMODB")
-        )
+        target_dataset = args.target_data if args.target_data else ("RAVDESS" if args.data == "EMODB" else "EMODB")
         print(f"📊 Source domain: {args.data}")
         print(f"📊 Target domain: {target_dataset}")
 
@@ -684,9 +599,7 @@ def main():
         print(f"Target classes: {target_class_labels}")
 
         # Initialize the model with source domain class labels
-        ser_model = SpeechEmotionModel(
-            input_shape=x_source.shape[1:], class_labels=source_class_labels, args=args
-        )
+        ser_model = SpeechEmotionModel(input_shape=x_source.shape[1:], class_labels=source_class_labels, args=args)
 
         # Train with domain adaptation
         # Initialize LMMD loss by setting the flag
@@ -701,9 +614,7 @@ def main():
             # Evaluate on source validation data
             y_source_pred = ser_model.model.predict(x_source)
             y_source_pred = np.argmax(y_source_pred, axis=1)
-            y_source_true = (
-                y_source if len(y_source.shape) == 1 else np.argmax(y_source, axis=1)
-            )
+            y_source_true = y_source if len(y_source.shape) == 1 else np.argmax(y_source, axis=1)
 
             source_report = classification_report(
                 y_source_true,
@@ -719,9 +630,7 @@ def main():
             # Also evaluate on target data
             y_target_pred = ser_model.model.predict(x_target)
             y_target_pred = np.argmax(y_target_pred, axis=1)
-            y_target_true = (
-                y_target if len(y_target.shape) == 1 else np.argmax(y_target, axis=1)
-            )
+            y_target_true = y_target if len(y_target.shape) == 1 else np.argmax(y_target, axis=1)
 
             # Adjust target class names if needed
             if len(target_class_labels) != max(y_target_true) + 1:
@@ -753,35 +662,23 @@ def main():
                     # If we haven't evaluated on source data yet, do it now
                     y_source_pred = ser_model.model.predict(x_source)
                     y_source_pred = np.argmax(y_source_pred, axis=1)
-                    y_source_true = (
-                        y_source
-                        if len(y_source.shape) == 1
-                        else np.argmax(y_source, axis=1)
-                    )
+                    y_source_true = y_source if len(y_source.shape) == 1 else np.argmax(y_source, axis=1)
 
                 # Similarly ensure target predictions are available
                 if not "y_target_true" in locals() or not "y_target_pred" in locals():
                     y_target_pred = ser_model.model.predict(x_target)
                     y_target_pred = np.argmax(y_target_pred, axis=1)
-                    y_target_true = (
-                        y_target
-                        if len(y_target.shape) == 1
-                        else np.argmax(y_target, axis=1)
-                    )
+                    y_target_true = y_target if len(y_target.shape) == 1 else np.argmax(y_target, axis=1)
 
                     # Adjust target class names if needed
                     if len(target_class_labels) != max(y_target_true) + 1:
-                        target_names = [
-                            f"Class {i}" for i in range(max(y_target_true) + 1)
-                        ]
+                        target_names = [f"Class {i}" for i in range(max(y_target_true) + 1)]
                     else:
                         target_names = target_class_labels
 
                 # Source domain visualization
                 cm_source = confusion_matrix(y_source_true, y_source_pred)
-                cm_source_norm = (
-                    cm_source.astype("float") / cm_source.sum(axis=1)[:, np.newaxis]
-                )
+                cm_source_norm = cm_source.astype("float") / cm_source.sum(axis=1)[:, np.newaxis]
 
                 plt.figure(figsize=(10, 8))
                 sns.heatmap(
@@ -798,16 +695,12 @@ def main():
 
                 # Create results directory if needed
                 os.makedirs(args.result_path, exist_ok=True)
-                source_viz_path = os.path.join(
-                    args.result_path, f"lmmd_{args.data}_source_cm.png"
-                )
+                source_viz_path = os.path.join(args.result_path, f"lmmd_{args.data}_source_cm.png")
                 plt.savefig(source_viz_path)
 
                 # Target domain visualization
                 cm_target = confusion_matrix(y_target_true, y_target_pred)
-                cm_target_norm = (
-                    cm_target.astype("float") / cm_target.sum(axis=1)[:, np.newaxis]
-                )
+                cm_target_norm = cm_target.astype("float") / cm_target.sum(axis=1)[:, np.newaxis]
 
                 plt.figure(figsize=(10, 8))
                 sns.heatmap(
@@ -822,17 +715,13 @@ def main():
                 plt.ylabel("True")
                 plt.title(f"Target Domain ({target_dataset}) Confusion Matrix")
 
-                target_viz_path = os.path.join(
-                    args.result_path, f"lmmd_{target_dataset}_target_cm.png"
-                )
+                target_viz_path = os.path.join(args.result_path, f"lmmd_{target_dataset}_target_cm.png")
                 plt.savefig(target_viz_path)
 
                 print(f"✅ Visualizations saved to: {args.result_path}")
 
             except ImportError:
-                print(
-                    "⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'"
-                )
+                print("⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'")
 
     else:
         print(f"⚠️ Invalid mode: {args.mode}")

@@ -31,9 +31,10 @@ Ensure the following functions are implemented:
 # ================================
 import argparse
 import os
-from src.data_processing.reorganize_data import reorganize_emodb, reorganize_ravdess
+
 from src.data_processing.extract_feature import extract_all_features_dual
 from src.data_processing.load_dataset import convert_to_npy
+from src.data_processing.reorganize_data import reorganize_emodb, reorganize_ravdess
 
 
 # ================================
@@ -80,18 +81,14 @@ def main(dataset="EMODB"):
         output_path=f"data/features/HUBERT/{dataset}_HUBERT/{dataset}.npy",
     )
 
-    print(
-        f"\n✅ All done! MFCC, LogMel, and HuBERT features for {dataset} are ready for training."
-    )
+    print(f"\n✅ All done! MFCC, LogMel, and HuBERT features for {dataset} are ready for training.")
 
 
 # ================================
 # 🔧 CLI Entrypoint
 # ================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Run the full data processing pipeline for speech emotion recognition."
-    )
+    parser = argparse.ArgumentParser(description="Run the full data processing pipeline for speech emotion recognition.")
     parser.add_argument(
         "--dataset",
         type=str,

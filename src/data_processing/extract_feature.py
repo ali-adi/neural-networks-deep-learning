@@ -40,14 +40,16 @@ DATASETS SUPPORTED:
 - RAVDESS (RAVDESS speech dataset)
 """
 
-import os
 import argparse
-import numpy as np
+import os
+
 import librosa
+import numpy as np
 import torch
 import torchaudio
 from tqdm import tqdm
-from transformers import Wav2Vec2FeatureExtractor, HubertModel
+from transformers import HubertModel, Wav2Vec2FeatureExtractor
+
 from src.data_processing.load_dataset import convert_to_npy
 
 
@@ -76,21 +78,17 @@ def get_hubert_model():
     global _hubert_model, _hubert_processor
     if _hubert_model is None:
         # Suppress warnings
-        import warnings
         import logging
+        import warnings
 
         # Suppress FutureWarning about resume_download
-        warnings.filterwarnings(
-            "ignore", category=FutureWarning, module="huggingface_hub"
-        )
+        warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
 
         # Suppress model initialization warnings
         logging.getLogger("transformers").setLevel(logging.ERROR)
 
         # Load model with proper configuration
-        _hubert_processor = Wav2Vec2FeatureExtractor.from_pretrained(
-            "facebook/hubert-base-ls960"
-        )
+        _hubert_processor = Wav2Vec2FeatureExtractor.from_pretrained("facebook/hubert-base-ls960")
 
         # Load model with proper configuration to avoid weight mismatch
         _hubert_model = HubertModel.from_pretrained(
@@ -115,9 +113,7 @@ def extract_hubert(audio_path):
     # Extract features
     with torch.no_grad():
         # Reshape input to match expected dimensions [batch_size, sequence_length]
-        input_values = inputs.input_values.squeeze(
-            0
-        )  # Remove batch dimension if present
+        input_values = inputs.input_values.squeeze(0)  # Remove batch dimension if present
 
         # Ensure input is 2D (unbatched) or 3D (batched)
         if input_values.dim() == 1:
@@ -223,9 +219,7 @@ def process_directory(input_root, output_root, feature_type="mfcc", n_mfcc=96):
             else:
                 raise ValueError(f"Unsupported feature type: {feature_type}")
 
-            output_path = os.path.join(
-                output_emotion_path, file.replace(".wav", ".npy")
-            )
+            output_path = os.path.join(output_emotion_path, file.replace(".wav", ".npy"))
             np.save(output_path, features)
 
     print("✅ Feature extraction complete.")
@@ -235,9 +229,7 @@ def process_directory(input_root, output_root, feature_type="mfcc", n_mfcc=96):
 # 📌 CLI Entry Point
 # ======================
 def main():
-    parser = argparse.ArgumentParser(
-        description="Extract audio features from labeled .wav files."
-    )
+    parser = argparse.ArgumentParser(description="Extract audio features from labeled .wav files.")
     parser.add_argument(
         "--dataset",
         type=str,

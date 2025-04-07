@@ -69,12 +69,13 @@ RAVDESS Emotion Code → Emotion Label:
     08 → surprised
 """
 
+import argparse
+
 # ======================
 # 📦 Core Python Imports
 # ======================
 import os
 import shutil
-import argparse
 
 # ======================
 # 🔖 Emotion Mappings
@@ -148,9 +149,7 @@ def reorganize_emodb(source_directory: str, destination_directory: str):
                 print(f"[✓] {file} → {emotion_label}/")
                 total_processed += 1
             else:
-                print(
-                    f"⚠️ Unknown emotion code in file: {file} | Length: {len(file)} | Char[5]: {file[5] if len(file) > 5 else 'N/A'}"
-                )
+                print(f"⚠️ Unknown emotion code in file: {file} | Length: {len(file)} | Char[5]: {file[5] if len(file) > 5 else 'N/A'}")
                 skipped_files.append(file)
                 total_unknown += 1
 
@@ -217,16 +216,12 @@ def reorganize_ravdess(source_directory: str, destination_directory: str):
 
                         if emotion_label:
                             source_path = os.path.join(actor_path, file)
-                            target_path = os.path.join(
-                                destination_directory, emotion_label, file
-                            )
+                            target_path = os.path.join(destination_directory, emotion_label, file)
                             shutil.copy2(source_path, target_path)
                             print(f"[✓] {file} → {emotion_label}/")
                             total_processed += 1
                         else:
-                            print(
-                                f"⚠️ Unknown emotion code in file: {file} | Code: {emotion_code}"
-                            )
+                            print(f"⚠️ Unknown emotion code in file: {file} | Code: {emotion_code}")
                             skipped_files.append(os.path.join(actor_dir, file))
                             total_unknown += 1
                     else:
@@ -256,9 +251,7 @@ def reorganize_ravdess(source_directory: str, destination_directory: str):
 # 🚀 CLI Entrypoint
 # ======================
 def main():
-    parser = argparse.ArgumentParser(
-        description="Reorganize EMODB or RAVDESS .wav files into emotion-labeled subdirectories."
-    )
+    parser = argparse.ArgumentParser(description="Reorganize EMODB or RAVDESS .wav files into emotion-labeled subdirectories.")
     parser.add_argument(
         "--dataset",
         type=str,

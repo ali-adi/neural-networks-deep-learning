@@ -150,7 +150,7 @@ class MultiHeadAttention:
         self.num_heads = num_heads
         self.d_model = d_model
         self.d_k = d_model // num_heads
-        
+
     def forward(self, Q, K, V):
         # Multi-head attention implementation
         attention_weights = softmax(Q @ K.transpose(-2, -1) / sqrt(self.d_k))
@@ -176,18 +176,18 @@ class MultiHeadAttention:
    mfcc_features = mfcc_stream(mfcc_input)
    logmel_features = logmel_stream(logmel_input)
    hubert_features = hubert_stream(hubert_input)
-   
+
    # Feature fusion
    fused_features = feature_fusion([mfcc_features, logmel_features, hubert_features])
-   
+
    # Temporal modeling
    temporal_features = temporal_cnn(fused_features)
    dtpm_features = dtpm_module(temporal_features)
-   
+
    # Domain adaptation
    if training_mode == 'adaptation':
        lmmd_loss = lmmd_module(source_features, target_features)
-   
+
    # Classification
    emotion_predictions = classification_head(dtpm_features)
    ```
@@ -278,22 +278,22 @@ class FeatureFusion:
         )
         self.weights = nn.Parameter(torch.ones(len(feature_dims)))
         self.layer_norm = nn.LayerNorm(sum(feature_dims))
-        
+
     def forward(self, features):
         # Normalize weights
         weights = F.softmax(self.weights, dim=0)
-        
+
         # Weighted concatenation
         fused = torch.cat([
             w * f for w, f in zip(weights, features)
         ], dim=-1)
-        
+
         # Layer normalization
         fused = self.layer_norm(fused)
-        
+
         # Self-attention for feature interaction
         attended = self.attention(fused, fused, fused)
-        
+
         # Residual connection
         return fused + attended
 ```
@@ -328,29 +328,29 @@ class EnhancedDTPM:
                 residual=True
             ) for i in range(num_levels)
         ])
-        
+
         # Cross-scale attention
         self.cross_scale_attention = CrossScaleAttention(
             feature_dim=feature_dim,
             num_heads=4
         )
-        
+
         # Feature aggregation
         self.aggregation = FeatureAggregation(
             in_channels=feature_dim * num_levels,
             out_channels=feature_dim
         )
-        
+
     def forward(self, x):
         # Process at different temporal scales
         features = []
         for level in self.levels:
             feat = level(x)
             features.append(feat)
-        
+
         # Cross-scale feature interaction
         attended = self.cross_scale_attention(features)
-        
+
         # Aggregate features
         return self.aggregation(attended)
 
@@ -358,39 +358,39 @@ class TemporalBlock(nn.Module):
     def __init__(self, in_channels, dilation, residual=True):
         super().__init__()
         self.conv1 = nn.Conv1d(
-            in_channels, 
-            in_channels, 
+            in_channels,
+            in_channels,
             kernel_size=3,
             dilation=dilation,
             padding=dilation
         )
         self.bn1 = nn.BatchNorm1d(in_channels)
         self.conv2 = nn.Conv1d(
-            in_channels, 
-            in_channels, 
+            in_channels,
+            in_channels,
             kernel_size=3,
             dilation=dilation,
             padding=dilation
         )
         self.bn2 = nn.BatchNorm1d(in_channels)
         self.residual = residual
-        
+
     def forward(self, x):
         identity = x
-        
+
         # First convolution block
         out = self.conv1(x)
         out = self.bn1(out)
         out = F.relu(out)
-        
+
         # Second convolution block
         out = self.conv2(out)
         out = self.bn2(out)
-        
+
         # Residual connection
         if self.residual:
             out += identity
-            
+
         return F.relu(out)
 ```
 
@@ -419,64 +419,64 @@ class LMMD:
         self.num_classes = num_classes
         self.kernel_mul = kernel_mul
         self.kernel_num = kernel_num
-        
+
     def gaussian_kernel(self, source, target):
         n_samples = int(source.size()[0]) + int(target.size()[0])
         total = torch.cat([source, target], dim=0)
-        
+
         # Calculate pairwise distances
         total0 = total.unsqueeze(0).expand(
-            int(total.size()[0]), 
-            int(total.size()[0]), 
+            int(total.size()[0]),
+            int(total.size()[0]),
             int(total.size()[1])
         )
         L2_distance = ((total0-total).pow(2)).sum(2)
-        
+
         # Calculate kernel bandwidth
         bandwidth = torch.sum(L2_distance.data) / (n_samples**2-n_samples)
         bandwidth /= self.kernel_mul ** (self.kernel_num // 2)
-        
+
         # Multiple kernel bandwidths
-        bandwidth_list = [bandwidth * (self.kernel_mul**i) 
+        bandwidth_list = [bandwidth * (self.kernel_mul**i)
                          for i in range(self.kernel_num)]
-        
+
         # Calculate kernel values
-        kernel_val = [torch.exp(-L2_distance / bandwidth_temp) 
+        kernel_val = [torch.exp(-L2_distance / bandwidth_temp)
                      for bandwidth_temp in bandwidth_list]
-        
+
         return sum(kernel_val)
-    
+
     def forward(self, source_features, target_features, source_labels):
         total_loss = 0
-        
+
         # Class-conditional alignment
         for class_idx in range(self.num_classes):
             # Select class-specific features
             source_mask = source_labels == class_idx
             source_class = source_features[source_mask]
-            
+
             # Estimate target class features
             target_class = self.estimate_target_features(
-                target_features, 
+                target_features,
                 class_idx
             )
-            
+
             # Calculate MMD for this class
             if len(source_class) > 0 and len(target_class) > 0:
                 kernel_val = self.gaussian_kernel(
-                    source_class, 
+                    source_class,
                     target_class
                 )
-                
+
                 # Calculate MMD loss
                 loss = self.calculate_mmd(
                     kernel_val,
                     len(source_class),
                     len(target_class)
                 )
-                
+
                 total_loss += loss
-                
+
         return total_loss / self.num_classes
 ```
 
@@ -510,16 +510,16 @@ class TrainingManager:
             T_max=100,
             eta_min=1e-6
         )
-        
+
     def train_step(self, source_batch, target_batch, source_labels):
         # Forward pass
         source_pred = self.model(source_batch)
         target_pred = self.model(target_batch)
-        
+
         # Extract features for domain adaptation
         source_features = self.model.get_features(source_batch)
         target_features = self.model.get_features(target_batch)
-        
+
         # Calculate losses
         class_loss = F.cross_entropy(source_pred, source_labels)
         adapt_loss = self.domain_adapter(
@@ -527,23 +527,23 @@ class TrainingManager:
             target_features,
             source_labels
         )
-        
+
         # Combined loss
         total_loss = class_loss + self.lmmd_weight * adapt_loss
-        
+
         # Optimization
         self.optimizer.zero_grad()
         total_loss.backward()
-        
+
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(
             self.model.parameters(),
             max_norm=1.0
         )
-        
+
         self.optimizer.step()
         self.scheduler.step()
-        
+
         return {
             'total_loss': total_loss.item(),
             'class_loss': class_loss.item(),
@@ -777,17 +777,17 @@ def extract_hubert(audio_path):
     """Extract HuBERT embeddings from audio file"""
     # Load HuBERT model
     model = get_hubert_model()
-    
+
     # Load and preprocess audio
     waveform, sample_rate = torchaudio.load(audio_path)
     if sample_rate != 16000:
         resampler = torchaudio.transforms.Resample(sample_rate, 16000)
         waveform = resampler(waveform)
-    
+
     # Extract features
     with torch.no_grad():
         features = model(waveform)
-    
+
     return features.squeeze().numpy().T  # Transpose to get (time_steps, feature_dim)
 ```
 
@@ -810,7 +810,7 @@ def temporal_block(
     )(inputs)
     conv1 = tf.keras.layers.BatchNormalization()(conv1)
     conv1 = tf.keras.layers.Dropout(dropout_rate)(conv1)
-    
+
     # Second convolution block
     conv2 = tf.keras.layers.Conv1D(
         filters=nb_filters,
@@ -821,7 +821,7 @@ def temporal_block(
     )(conv1)
     conv2 = tf.keras.layers.BatchNormalization()(conv2)
     conv2 = tf.keras.layers.Dropout(dropout_rate)(conv2)
-    
+
     # Residual connection
     if inputs.shape[-1] == nb_filters:
         res = inputs
@@ -829,11 +829,11 @@ def temporal_block(
         res = tf.keras.layers.Conv1D(
             filters=nb_filters, kernel_size=1, padding="causal"
         )(inputs)
-    
+
     # Add residual connection
     out = tf.keras.layers.Add()([conv2, res])
     out = tf.keras.layers.Activation(activation)(out)
-    
+
     return out
 
 # src/models/model.py (lines 77-150)
@@ -856,11 +856,11 @@ class TemporalConvNet:
         self.activation = activation
         self.dropout_rate = dropout_rate
         self.name = name
-        
+
     def __call__(self, inputs):
         # Process forward direction
         forward = inputs
-        
+
         # Stack temporal blocks with increasing dilation
         for stack in range(self.nb_stacks):
             for dilation in [2**i for i in range(self.dilations)]:
@@ -872,10 +872,10 @@ class TemporalConvNet:
                     kernel_size=self.kernel_size,
                     dropout_rate=self.dropout_rate,
                 )
-        
+
         # Process backward direction (reversed input)
         backward = tf.reverse(inputs, axis=[1])
-        
+
         # Stack temporal blocks with increasing dilation
         for stack in range(self.nb_stacks):
             for dilation in [2**i for i in range(self.dilations)]:
@@ -887,10 +887,10 @@ class TemporalConvNet:
                     kernel_size=self.kernel_size,
                     dropout_rate=self.dropout_rate,
                 )
-        
+
         # Reverse back to original order
         backward = tf.reverse(backward, axis=[1])
-        
+
         # Concatenate forward and backward
         return tf.keras.layers.Concatenate()([forward, backward])
 ```
@@ -908,11 +908,11 @@ class WeightLayer(tf.keras.layers.Layer):
             trainable=True,
         )
         super(WeightLayer, self).build(input_shape)
-        
+
     def call(self, inputs):
         # Apply softmax to get normalized weights
         weights = tf.nn.softmax(self.weights)
-        
+
         # Apply weights to input
         return inputs * weights
 ```
@@ -924,28 +924,28 @@ def gaussian_kernel(source, target, kernel_mul=2.0, kernel_num=5, fix_sigma=None
     """Calculate the RBF (Gaussian) kernel between source and target"""
     n_samples = tf.shape(source)[0] + tf.shape(target)[0]
     total = tf.concat([source, target], axis=0)
-    
+
     # Calculate pairwise distances
     total0 = tf.expand_dims(total, 0)
     total0 = tf.tile(total0, [n_samples, 1, 1])
     total1 = tf.expand_dims(total, 1)
     total1 = tf.tile(total1, [1, n_samples, 1])
-    
+
     L2_distance = tf.reduce_sum(tf.square(total0 - total1), axis=2)
-    
+
     # Calculate kernel bandwidth
     if fix_sigma is None:
         bandwidth = tf.reduce_sum(L2_distance) / (n_samples**2 - n_samples)
         bandwidth /= kernel_mul ** (kernel_num // 2)
     else:
         bandwidth = fix_sigma
-    
+
     # Multiple kernel bandwidths
     bandwidth_list = [bandwidth * (kernel_mul**i) for i in range(kernel_num)]
-    
+
     # Calculate kernel values
     kernel_val = [tf.exp(-L2_distance / bandwidth_temp) for bandwidth_temp in bandwidth_list]
-    
+
     return tf.reduce_sum(kernel_val, axis=0)
 
 # src/models/lmmd_loss.py (lines 47-90)
@@ -961,35 +961,35 @@ def lmmd_loss(
 ):
     """Local Maximum Mean Discrepancy loss for domain adaptation"""
     total_loss = 0.0
-    
+
     # Class-conditional alignment
     for class_idx in range(num_classes):
         # Select class-specific features
         source_mask = tf.equal(source_labels, class_idx)
         source_class = tf.boolean_mask(source_features, source_mask)
-        
+
         target_mask = tf.equal(target_pseudo_labels, class_idx)
         target_class = tf.boolean_mask(target_features, target_mask)
-        
+
         # Calculate MMD for this class
         if tf.shape(source_class)[0] > 0 and tf.shape(target_class)[0] > 0:
             kernel_val = gaussian_kernel(
-                source_class, 
+                source_class,
                 target_class,
                 kernel_mul=kernel_mul,
                 kernel_num=kernel_num,
                 fix_sigma=fix_sigma
             )
-            
+
             # Calculate MMD loss
             loss = mmd_loss_from_kernel(
                 kernel_val,
                 tf.shape(source_class)[0],
                 tf.shape(target_class)[0]
             )
-            
+
             total_loss += loss
-    
+
     return total_loss / num_classes
 ```
 
@@ -1005,12 +1005,12 @@ class SpeechEmotionModel:
         self.class_labels = class_labels
         self.args = args
         self.model = self.create_model()
-        
+
     def create_model(self):
         """Create the model architecture"""
         # Input layer
         inputs = tf.keras.layers.Input(shape=self.input_shape)
-        
+
         # Temporal convolutional network
         tcn = TemporalConvNet(
             nb_filters=self.args.filter_size,
@@ -1020,23 +1020,23 @@ class SpeechEmotionModel:
             activation=self.args.activation,
             dropout_rate=self.args.dropout
         )(inputs)
-        
+
         # Feature aggregation with attention
         weighted = WeightLayer()(tcn)
-        
+
         # Global average pooling
         pooled = tf.keras.layers.GlobalAveragePooling1D()(weighted)
-        
+
         # Classification head
         x = tf.keras.layers.Dense(1024, activation="relu")(pooled)
         x = tf.keras.layers.Dropout(0.4)(x)
         x = tf.keras.layers.Dense(512, activation="relu")(x)
         x = tf.keras.layers.Dropout(0.4)(x)
         outputs = tf.keras.layers.Dense(len(self.class_labels), activation="softmax")(x)
-        
+
         # Create model
         model = tf.keras.Model(inputs=inputs, outputs=outputs)
-        
+
         # Compile model
         model.compile(
             optimizer=tf.keras.optimizers.Adam(
@@ -1047,26 +1047,26 @@ class SpeechEmotionModel:
             loss="categorical_crossentropy",
             metrics=["accuracy"]
         )
-        
+
         return model
-    
+
     def train(self, x, y):
         """Train the model using k-fold cross-validation"""
         # Initialize k-fold cross-validation
         kfold = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=42)
-        
+
         # Initialize metrics storage
         fold_metrics = []
-        
+
         # Train on each fold
         for fold_idx, (train_idx, val_idx) in enumerate(kfold.split(x)):
             # Split data
             x_train, x_val = x[train_idx], x[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
-            
+
             # Apply label smoothing
             y_train_smooth = smooth_labels(y_train, factor=0.1)
-            
+
             # Train model
             history = self.model.fit(
                 x_train, y_train_smooth,
@@ -1081,16 +1081,16 @@ class SpeechEmotionModel:
                     )
                 ]
             )
-            
+
             # Evaluate model
             metrics = self.model.evaluate(x_val, y_val)
             fold_metrics.append(metrics)
-            
+
             # Save best model
             if fold_idx == 0 or metrics[1] > best_accuracy:
                 best_accuracy = metrics[1]
                 self.model.save_weights(f"{self.args.model_path}/best_model.h5")
-        
+
         return fold_metrics
 ```
 
@@ -1107,7 +1107,7 @@ def train_with_domain_adaptation(
         beta_1=self.args.beta1,
         beta_2=self.args.beta2
     )
-    
+
     # Initialize LMMD loss
     lmmd_loss_fn = get_lmmd_loss(
         num_classes=len(self.class_labels),
@@ -1115,24 +1115,24 @@ def train_with_domain_adaptation(
         kernel_num=5,
         weight=self.args.lmmd_weight
     )
-    
+
     # Training loop
     for epoch in range(self.args.epoch):
         # Shuffle data
         source_idx = np.random.permutation(len(source_data))
         target_idx = np.random.permutation(len(target_data))
-        
+
         # Batch training
         for batch_idx in range(0, len(source_data), self.args.batch_size):
             # Get batch indices
             source_batch_idx = source_idx[batch_idx:batch_idx+self.args.batch_size]
             target_batch_idx = target_idx[batch_idx:batch_idx+self.args.batch_size]
-            
+
             # Get batch data
             source_batch = source_data[source_batch_idx]
             source_labels_batch = source_labels[source_batch_idx]
             target_batch = target_data[target_batch_idx]
-            
+
             # Get target pseudo-labels if available
             if target_labels is not None:
                 target_labels_batch = target_labels[target_batch_idx]
@@ -1140,17 +1140,17 @@ def train_with_domain_adaptation(
                 # Generate pseudo-labels using source model
                 target_pred = self.model.predict(target_batch)
                 target_labels_batch = np.argmax(target_pred, axis=1)
-            
+
             # Train step
             with tf.GradientTape() as tape:
                 # Forward pass
                 source_pred = self.model(source_batch, training=True)
                 target_pred = self.model(target_batch, training=True)
-                
+
                 # Extract features for domain adaptation
                 source_features = self.model.get_features(source_batch)
                 target_features = self.model.get_features(target_batch)
-                
+
                 # Calculate losses
                 class_loss = tf.keras.losses.categorical_crossentropy(
                     source_labels_batch, source_pred
@@ -1161,18 +1161,18 @@ def train_with_domain_adaptation(
                     np.argmax(source_labels_batch, axis=1),
                     target_labels_batch
                 )
-                
+
                 # Combined loss
                 total_loss = class_loss + self.args.lmmd_weight * adapt_loss
-            
+
             # Calculate gradients
             gradients = tape.gradient(total_loss, self.model.trainable_variables)
-            
+
             # Clip gradients
             gradients, _ = tf.clip_by_global_norm(
                 gradients, self.args.max_grad_norm
             )
-            
+
             # Apply gradients
             optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
 ```
@@ -1189,19 +1189,19 @@ def evaluate_test(
     # Load best model weights
     if path is not None:
         self._load_weights(path)
-    
+
     # Make predictions
     y_pred = self.model.predict(x_test)
     y_pred_classes = np.argmax(y_pred, axis=1)
     y_true_classes = np.argmax(y_test, axis=1)
-    
+
     # Calculate metrics
     accuracy = np.mean(y_pred_classes == y_true_classes)
     confusion_matrix = confusion_matrix(y_true_classes, y_pred_classes)
     classification_report = classification_report(
         y_true_classes, y_pred_classes, target_names=self.class_labels
     )
-    
+
     # Save results
     if result_filename is not None and result_dir is not None:
         self._save_results_to_excel(
@@ -1211,7 +1211,7 @@ def evaluate_test(
             accuracy,
             self.class_labels
         )
-    
+
     return accuracy, confusion_matrix, classification_report
 ```
 
@@ -1227,15 +1227,15 @@ class ModelConfig:
         self.mfcc_dim = 96
         self.logmel_dim = 128
         self.hubert_dim = 768
-        
+
         # Temporal modeling
         self.num_levels = 3
         self.dilation_rates = [1, 2, 4, 8, 16]
-        
+
         # Attention
         self.num_heads = 8
         self.dropout = 0.1
-        
+
         # Domain adaptation
         self.lmmd_weight = 0.5
         self.kernel_mul = 2.0
@@ -1253,12 +1253,12 @@ class TrainingConfig:
         self.beta1 = 0.93
         self.beta2 = 0.98
         self.max_grad_norm = 1.0
-        
+
         # Training process
         self.batch_size = 32
         self.epochs = 300
         self.min_lr = 1e-6
-        
+
         # Validation
         self.val_frequency = 1
         self.early_stopping_patience = 10

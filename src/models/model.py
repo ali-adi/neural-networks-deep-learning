@@ -61,49 +61,38 @@ import warnings
 warnings.filterwarnings("ignore")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
+import copy
+import datetime
+import shutil
+
+# Add visualization imports
+import matplotlib.pyplot as plt
+
 # Standard libraries
 import numpy as np
-import datetime
-import copy
 import pandas as pd
-import shutil
+import seaborn as sns
 
 # TensorFlow imports
 import tensorflow as tf
 import tensorflow.keras.backend as K
-from tensorflow.keras.layers import (
-    Conv1D,
-    SpatialDropout1D,
-    BatchNormalization,
-    Activation,
-    add,
-    GlobalAveragePooling1D,
-    Lambda,
-    Dense,
-    Input,
-)
-from tensorflow.keras.models import Model as KerasModel
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras import callbacks
-from tensorflow.keras.activations import sigmoid
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 # Evaluation tools
-from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc
+from sklearn.metrics import auc, classification_report, confusion_matrix, roc_curve
 from sklearn.model_selection import KFold
-
-# Add visualization imports
-import matplotlib.pyplot as plt
-import seaborn as sns
+from tensorflow.keras import callbacks
+from tensorflow.keras.activations import sigmoid
+from tensorflow.keras.layers import Activation, BatchNormalization, Conv1D, Dense, GlobalAveragePooling1D, Input, Lambda, SpatialDropout1D, add
+from tensorflow.keras.models import Model as KerasModel
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.utils import to_categorical
 
 
 # ------------------------
 # TEMPORAL BLOCK DEFINITION
 # ------------------------
-def temporal_block(
-    inputs, dilation, activation, nb_filters, kernel_size, dropout_rate=0.0
-):
+def temporal_block(inputs, dilation, activation, nb_filters, kernel_size, dropout_rate=0.0):
     skip_connection = inputs
     x = Conv1D(
         filters=nb_filters,
@@ -124,9 +113,7 @@ def temporal_block(
     x = Activation(activation)(x)
     x = SpatialDropout1D(dropout_rate)(x)
     if skip_connection.shape[-1] != x.shape[-1]:
-        skip_connection = Conv1D(filters=nb_filters, kernel_size=1, padding="same")(
-            skip_connection
-        )
+        skip_connection = Conv1D(filters=nb_filters, kernel_size=1, padding="same")(skip_connection)
     gated = Lambda(sigmoid)(x)
     return skip_connection * gated
 
@@ -302,9 +289,7 @@ class SpeechEmotionModel:
             beta_2=self.args.beta2,
             epsilon=1e-8,
         )
-        self.model.compile(
-            loss="categorical_crossentropy", optimizer=optimizer, metrics=["accuracy"]
-        )
+        self.model.compile(loss="categorical_crossentropy", optimizer=optimizer, metrics=["accuracy"])
         print("✅ Model compiled successfully!\n")
 
     def train(self, x, y):
@@ -314,9 +299,7 @@ class SpeechEmotionModel:
             # For 1D data (like pure HuBERT features), reshape if needed
             if len(x.shape) == 1:
                 # This is an object array of variable length features
-                print(
-                    f"🔄 Reshaping data from object array, first element shape: {x[0].shape if x.size > 0 else 'unknown'}"
-                )
+                print(f"🔄 Reshaping data from object array, first element shape: {x[0].shape if x.size > 0 else 'unknown'}")
                 # If it's a list or object array, we need to convert it
                 if x.dtype == object:
                     # Check shape of first item to determine format
@@ -356,9 +339,7 @@ class SpeechEmotionModel:
 
         # Create a unique model folder for this training session
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        session_folder = os.path.join(
-            save_dir, f"{self.args.data}_{self.args.feature_type}_{timestamp}"
-        )
+        session_folder = os.path.join(save_dir, f"{self.args.data}_{self.args.feature_type}_{timestamp}")
         os.makedirs(session_folder, exist_ok=True)
         print(f"📁 Saving models to: {session_folder}")
 
@@ -367,9 +348,7 @@ class SpeechEmotionModel:
 
             self.create_model()
             y_train_smoothed = smooth_labels(copy.deepcopy(y[train_idx]), 0.1)
-            weight_name = (
-                f"{self.args.split_fold}-fold_weights_best_{fold_idx}.weights.h5"
-            )
+            weight_name = f"{self.args.split_fold}-fold_weights_best_{fold_idx}.weights.h5"
             weight_path = os.path.join(session_folder, weight_name)
 
             # Set up ModelCheckpoint to save best weights during training
@@ -411,11 +390,7 @@ class SpeechEmotionModel:
                 self.best_fold_weight_path = weight_path
 
             y_pred = self.model.predict(x[test_idx])
-            self.matrix.append(
-                confusion_matrix(
-                    np.argmax(y[test_idx], axis=1), np.argmax(y_pred, axis=1)
-                )
-            )
+            self.matrix.append(confusion_matrix(np.argmax(y[test_idx], axis=1), np.argmax(y_pred, axis=1)))
             eval_dict = classification_report(
                 np.argmax(y[test_idx], axis=1),
                 np.argmax(y_pred, axis=1),
@@ -434,9 +409,7 @@ class SpeechEmotionModel:
             )
 
         self.acc = avg_acc / self.args.split_fold
-        print(
-            f"\n📊 Average Accuracy over {self.args.split_fold} folds: {round(self.acc * 100, 2)}%"
-        )
+        print(f"\n📊 Average Accuracy over {self.args.split_fold} folds: {round(self.acc * 100, 2)}%")
 
         # Plot combined metrics across all folds
         self._plot_combined_training_metrics(fold_metrics, session_folder)
@@ -445,25 +418,17 @@ class SpeechEmotionModel:
         if self.best_fold_weight_path:
             best_name = os.path.basename(self.best_fold_weight_path)
 
-            feature_subfolder = os.path.join(
-                "test_models", self.args.data, self.args.feature_type.upper()
-            )
+            feature_subfolder = os.path.join("test_models", self.args.data, self.args.feature_type.upper())
 
             # FIX: Remove any existing file with the same path before creating folder
-            if os.path.exists(feature_subfolder) and not os.path.isdir(
-                feature_subfolder
-            ):
+            if os.path.exists(feature_subfolder) and not os.path.isdir(feature_subfolder):
                 os.remove(feature_subfolder)
 
             os.makedirs(feature_subfolder, exist_ok=True)
 
             # Save the weight
-            shutil.copy(
-                self.best_fold_weight_path, os.path.join(feature_subfolder, best_name)
-            )
-            print(
-                f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to {feature_subfolder}/{best_name}"
-            )
+            shutil.copy(self.best_fold_weight_path, os.path.join(feature_subfolder, best_name))
+            print(f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to {feature_subfolder}/{best_name}")
 
     def _plot_fold_training_metrics(self, history, fold_idx, save_dir):
         """Plot and save training metrics for a specific fold"""
@@ -531,9 +496,7 @@ class SpeechEmotionModel:
 
         print(f"📊 Combined metrics across all folds saved to: {metrics_file}")
 
-    def train_with_domain_adaptation(
-        self, source_data, source_labels, target_data, target_labels=None
-    ):
+    def train_with_domain_adaptation(self, source_data, source_labels, target_data, target_labels=None):
         """
         Train the model with domain adaptation using LMMD loss
 
@@ -560,9 +523,7 @@ class SpeechEmotionModel:
 
         # Make sure source labels are one-hot encoded
         if len(source_labels.shape) == 1:
-            source_labels_onehot = to_categorical(
-                source_labels, num_classes=self.num_classes
-            )
+            source_labels_onehot = to_categorical(source_labels, num_classes=self.num_classes)
         else:
             source_labels_onehot = source_labels
 
@@ -595,9 +556,7 @@ class SpeechEmotionModel:
         else:
             # Use provided target labels
             if len(target_labels.shape) == 1:
-                target_pseudo_labels = to_categorical(
-                    target_labels, num_classes=self.num_classes
-                )
+                target_pseudo_labels = to_categorical(target_labels, num_classes=self.num_classes)
             else:
                 target_pseudo_labels = target_labels
 
@@ -630,12 +589,8 @@ class SpeechEmotionModel:
 
             # Get validation indices for target domain (same proportion as source)
             target_val_size = int(len(val_idx) / len(train_idx) * target_data.shape[0])
-            target_val_indices = np.random.choice(
-                target_data.shape[0], target_val_size, replace=False
-            )
-            target_train_indices = np.array(
-                [i for i in range(target_data.shape[0]) if i not in target_val_indices]
-            )
+            target_val_indices = np.random.choice(target_data.shape[0], target_val_size, replace=False)
+            target_train_indices = np.array([i for i in range(target_data.shape[0]) if i not in target_val_indices])
 
             # Split target data
             target_train = target_data[target_train_indices]
@@ -652,9 +607,7 @@ class SpeechEmotionModel:
 
             # Define a custom training step
             @tf.function
-            def train_step(
-                source_batch, source_labels_batch, target_batch, target_labels_batch
-            ):
+            def train_step(source_batch, source_labels_batch, target_batch, target_labels_batch):
                 with tf.GradientTape() as tape:
                     # Get source predictions
                     source_preds = self.model(source_batch, training=True)
@@ -663,20 +616,14 @@ class SpeechEmotionModel:
                     target_preds = self.model(target_batch, training=True)
 
                     # Extract features from the layer before final dense layer
-                    source_features_model = tf.keras.Model(
-                        inputs=self.model.input, outputs=self.model.layers[-2].output
-                    )
-                    target_features_model = tf.keras.Model(
-                        inputs=self.model.input, outputs=self.model.layers[-2].output
-                    )
+                    source_features_model = tf.keras.Model(inputs=self.model.input, outputs=self.model.layers[-2].output)
+                    target_features_model = tf.keras.Model(inputs=self.model.input, outputs=self.model.layers[-2].output)
 
                     source_features = source_features_model(source_batch, training=True)
                     target_features = target_features_model(target_batch, training=True)
 
                     # Calculate classification loss
-                    class_loss = tf.keras.losses.categorical_crossentropy(
-                        source_labels_batch, source_preds
-                    )
+                    class_loss = tf.keras.losses.categorical_crossentropy(source_labels_batch, source_preds)
 
                     # Calculate LMMD loss
                     lmmd = self.lmmd_loss.get_lmmd_loss_fn()(
@@ -695,9 +642,7 @@ class SpeechEmotionModel:
                 gradients = tape.gradient(total_loss, self.model.trainable_variables)
 
                 # Update weights
-                optimizer.apply_gradients(
-                    zip(gradients, self.model.trainable_variables)
-                )
+                optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
 
                 return total_loss, tf.reduce_mean(class_loss), lmmd
 
@@ -743,9 +688,7 @@ class SpeechEmotionModel:
                 mode="max",
             )
 
-            early_stopping = callbacks.EarlyStopping(
-                monitor="val_accuracy", patience=30, restore_best_weights=True
-            )
+            early_stopping = callbacks.EarlyStopping(monitor="val_accuracy", patience=30, restore_best_weights=True)
 
             # Train the model with domain adaptation
             print(f"🚂 Training with domain adaptation...")
@@ -779,18 +722,12 @@ class SpeechEmotionModel:
                     source_batch_labels = y_train[source_batch_indices]
 
                     # Get target batch (cyclically if needed)
-                    target_batch_indices = target_indices[
-                        (start_idx % len(target_train)) : (
-                            (start_idx % len(target_train)) + batch_size
-                        )
-                    ]
+                    target_batch_indices = target_indices[(start_idx % len(target_train)) : ((start_idx % len(target_train)) + batch_size)]
                     if len(target_batch_indices) < batch_size:
                         target_batch_indices = np.concatenate(
                             [
                                 target_batch_indices,
-                                target_indices[
-                                    : (batch_size - len(target_batch_indices))
-                                ],
+                                target_indices[: (batch_size - len(target_batch_indices))],
                             ]
                         )
 
@@ -872,9 +809,7 @@ class SpeechEmotionModel:
 
         return self.acc
 
-    def evaluate_test(
-        self, x_test, y_test, path=None, result_filename=None, result_dir=None
-    ):
+    def evaluate_test(self, x_test, y_test, path=None, result_filename=None, result_dir=None):
         """
         Evaluate model on test data.
 
@@ -906,18 +841,12 @@ class SpeechEmotionModel:
         num_unique_classes = len(unique_classes)
 
         if num_unique_classes != len(self.class_labels):
-            print(
-                f"⚠️ Class mismatch: {num_unique_classes} classes detected, but {len(self.class_labels)} class labels provided"
-            )
+            print(f"⚠️ Class mismatch: {num_unique_classes} classes detected, but {len(self.class_labels)} class labels provided")
             # Use a subset of labels or generate generic labels
             if num_unique_classes < len(self.class_labels):
                 # Find which classes are actually present in the data
                 present_classes = sorted(unique_classes)
-                present_labels = [
-                    self.class_labels[i]
-                    for i in present_classes
-                    if i < len(self.class_labels)
-                ]
+                present_labels = [self.class_labels[i] for i in present_classes if i < len(self.class_labels)]
 
                 # Fill in any missing labels with generic names
                 if len(present_labels) < num_unique_classes:
@@ -957,12 +886,8 @@ class SpeechEmotionModel:
                 )
                 used_labels = generic_labels
         else:
-            cr = classification_report(
-                y_true, y_pred, target_names=self.class_labels, output_dict=True
-            )
-            cr_str = classification_report(
-                y_true, y_pred, target_names=self.class_labels
-            )
+            cr = classification_report(y_true, y_pred, target_names=self.class_labels, output_dict=True)
+            cr_str = classification_report(y_true, y_pred, target_names=self.class_labels)
             used_labels = self.class_labels
 
         accuracy = np.sum(np.diag(cm)) / np.sum(cm)
@@ -1009,9 +934,7 @@ class SpeechEmotionModel:
         print(f"✅ Results saved to: {excel_path}")
         return y_pred, accuracy
 
-    def _visualize_test_results(
-        self, x_test, y_true, y_pred, cm, cr, class_labels, output_prefix
-    ):
+    def _visualize_test_results(self, x_test, y_true, y_pred, cm, cr, class_labels, output_prefix):
         """Create and save detailed visualizations of test results"""
 
         # 1. Normalized confusion matrix visualization
@@ -1039,9 +962,7 @@ class SpeechEmotionModel:
 
         for label in class_labels:
             if label in cr:
-                class_metrics.append(
-                    [cr[label]["precision"], cr[label]["recall"], cr[label]["f1-score"]]
-                )
+                class_metrics.append([cr[label]["precision"], cr[label]["recall"], cr[label]["f1-score"]])
                 class_names.append(label)
 
         class_metrics = np.array(class_metrics)
@@ -1092,12 +1013,8 @@ class SpeechEmotionModel:
             plt.figure(figsize=(12, 10))
 
             for i, label in enumerate(class_labels):
-                if (
-                    i < y_pred_proba.shape[1]
-                ):  # Make sure we have probability for this class
-                    fpr, tpr, _ = roc_curve(
-                        (y_true == i).astype(int), y_pred_proba[:, i]
-                    )
+                if i < y_pred_proba.shape[1]:  # Make sure we have probability for this class
+                    fpr, tpr, _ = roc_curve((y_true == i).astype(int), y_pred_proba[:, i])
                     roc_auc = auc(fpr, tpr)
                     plt.plot(fpr, tpr, lw=2, label=f"{label} (AUC = {roc_auc:.2f})")
 
@@ -1127,9 +1044,7 @@ class SpeechEmotionModel:
                 raise ValueError(f"No weight files found in {path}")
 
             # Sort by creation time (most recent first)
-            weight_files.sort(
-                key=lambda x: os.path.getmtime(os.path.join(path, x)), reverse=True
-            )
+            weight_files.sort(key=lambda x: os.path.getmtime(os.path.join(path, x)), reverse=True)
 
             # Prefer files with "best" in the name
             best_files = [f for f in weight_files if "best" in f.lower()]
@@ -1175,22 +1090,15 @@ class SpeechEmotionModel:
                             if layer.name in layer_names and "dense" not in layer.name:
                                 # Get weight names for this layer
                                 g = f[layer.name]
-                                weight_names = [
-                                    n.decode("utf8") for n in g.attrs["weight_names"]
-                                ]
+                                weight_names = [n.decode("utf8") for n in g.attrs["weight_names"]]
 
                                 # Load weights for this layer
-                                weight_values = [
-                                    np.array(g[weight_name])
-                                    for weight_name in weight_names
-                                ]
+                                weight_values = [np.array(g[weight_name]) for weight_name in weight_names]
                                 try:
                                     layer.set_weights(weight_values)
                                     print(f"✓ Loaded weights for layer: {layer.name}")
                                 except Exception as layer_error:
-                                    print(
-                                        f"⚠️ Could not load weights for layer {layer.name}: {layer_error}"
-                                    )
+                                    print(f"⚠️ Could not load weights for layer {layer.name}: {layer_error}")
 
                         print("✅ Successfully loaded compatible layer weights")
                         return
@@ -1207,12 +1115,8 @@ class SpeechEmotionModel:
                         weights_data = weights_data.item()
 
                         # Find layers that don't have 'dense' in their name
-                        layer_names = [
-                            name for name in weights_data.keys() if "dense" not in name
-                        ]
-                        print(
-                            f"📄 Found {len(layer_names)} non-dense layers in weights file"
-                        )
+                        layer_names = [name for name in weights_data.keys() if "dense" not in name]
+                        print(f"📄 Found {len(layer_names)} non-dense layers in weights file")
 
                         # Load weights for non-dense layers
                         for layer in self.model.layers:
@@ -1222,28 +1126,17 @@ class SpeechEmotionModel:
                                     if layer.name in weights_data:
                                         if isinstance(weights_data[layer.name], dict):
                                             # Extract weight values from dictionary
-                                            weight_values = [
-                                                weights_data[layer.name][key]
-                                                for key in weights_data[
-                                                    layer.name
-                                                ].keys()
-                                            ]
+                                            weight_values = [weights_data[layer.name][key] for key in weights_data[layer.name].keys()]
                                         else:
                                             # Weights are directly stored
                                             weight_values = weights_data[layer.name]
 
                                         layer.set_weights(weight_values)
-                                        print(
-                                            f"✓ Loaded weights for layer: {layer.name}"
-                                        )
+                                        print(f"✓ Loaded weights for layer: {layer.name}")
                                 except Exception as layer_error:
-                                    print(
-                                        f"⚠️ Could not load weights for layer {layer.name}: {layer_error}"
-                                    )
+                                    print(f"⚠️ Could not load weights for layer {layer.name}: {layer_error}")
 
-                        print(
-                            "✅ Successfully loaded compatible layer weights (skipping dense layers)"
-                        )
+                        print("✅ Successfully loaded compatible layer weights (skipping dense layers)")
                         return
                 except Exception as np_error:
                     print(f"⚠️ Failed to load with NumPy: {np_error}")
@@ -1271,13 +1164,9 @@ class SpeechEmotionModel:
         except Exception as e:
             print(f"❌ All loading approaches failed!")
             print(f"❌ Last error: {e}")
-            raise ValueError(
-                f"Could not load model weights after multiple attempts. Try training the model first."
-            )
+            raise ValueError(f"Could not load model weights after multiple attempts. Try training the model first.")
 
-    def _save_results_to_excel(
-        self, excel_path, confusion_matrix, classification_report, accuracy, used_labels
-    ):
+    def _save_results_to_excel(self, excel_path, confusion_matrix, classification_report, accuracy, used_labels):
         """Save evaluation results to Excel file"""
         print(f"📝 Saving evaluation results to: {excel_path}")
 
@@ -1286,9 +1175,7 @@ class SpeechEmotionModel:
             writer = pd.ExcelWriter(excel_path, engine="openpyxl")
 
             # Save confusion matrix
-            df_cm = pd.DataFrame(
-                confusion_matrix, index=used_labels, columns=used_labels
-            )
+            df_cm = pd.DataFrame(confusion_matrix, index=used_labels, columns=used_labels)
             df_cm.to_excel(writer, sheet_name="Confusion_Matrix")
 
             # Save classification report

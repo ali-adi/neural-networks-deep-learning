@@ -41,12 +41,13 @@ FUNCTION INDEX:
 # 📦 Core Imports
 # ====================
 import os
+from glob import glob
+
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from torch.nn.utils.rnn import pad_sequence
-from glob import glob
+from torch.utils.data import DataLoader, Dataset, random_split
 
 # ====================
 # 🔖 Label Mapping
@@ -121,9 +122,7 @@ def collate_fn(batch):
 # ===================================
 # 🧪 Load PyTorch Dataset for Training
 # ===================================
-def load_feature_dataset(
-    data_directory, batch_size=32, val_split=0.2, shuffle=True, seed=42
-):
+def load_feature_dataset(data_directory, batch_size=32, val_split=0.2, shuffle=True, seed=42):
     """
     Loads a PyTorch DataLoader from .npy feature files.
 
@@ -146,18 +145,12 @@ def load_feature_dataset(
 
     if shuffle:
         generator = torch.Generator().manual_seed(seed)
-        train_dataset, val_dataset = random_split(
-            dataset, [train_size, val_size], generator=generator
-        )
+        train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=generator)
     else:
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
-    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
     print(f"✅ DataLoaders ready. Batch size: {batch_size}\n")
     return train_loader, val_loader
@@ -183,9 +176,7 @@ def load_fused_tensorflow_dataset(dataset_name):
         f"{dataset_name}_LOGMEL_128",
         f"{dataset_name}.npy",
     )
-    hubert_path = os.path.join(
-        "data", "features", "HUBERT", f"{dataset_name}_HUBERT", f"{dataset_name}.npy"
-    )
+    hubert_path = os.path.join("data", "features", "HUBERT", f"{dataset_name}_HUBERT", f"{dataset_name}.npy")
 
     print(f"Loading LogMel features from: {logmel_path}")
     print(f"Loading HuBERT features from: {hubert_path}")
@@ -211,9 +202,7 @@ def load_fused_tensorflow_dataset(dataset_name):
     # ✅ For fusion, we need to reshape HuBERT to match LogMel's time dimension
     # We'll repeat the HuBERT features along the time dimension
     # Create a new array with shape (samples, time_steps, hubert_features)
-    x_hubert_reshaped = np.zeros(
-        (x_logmel.shape[0], x_logmel.shape[1], x_hubert.shape[1])
-    )
+    x_hubert_reshaped = np.zeros((x_logmel.shape[0], x_logmel.shape[1], x_hubert.shape[1]))
 
     # Fill the array with HuBERT features
     for i in range(x_logmel.shape[0]):
@@ -255,17 +244,13 @@ def convert_to_npy(input_dir, output_path):
         input_dir (str): Directory containing emotion-labeled feature folders
         output_path (str): Path to save the .npy file
     """
-    print(
-        f"📤 Converting from folder '{input_dir}' to single .npy file → {output_path}"
-    )
+    print(f"📤 Converting from folder '{input_dir}' to single .npy file → {output_path}")
 
     data = []
     labels = []
 
     # Get all emotion folders
-    emotion_folders = [
-        f for f in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, f))
-    ]
+    emotion_folders = [f for f in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, f))]
 
     # Check if this is HuBERT features (which have a different shape)
     is_hubert = "HUBERT" in input_dir
@@ -316,9 +301,7 @@ if __name__ == "__main__":
     print("🧪 Testing load_feature_dataset")
     print("============================\n")
 
-    train_loader, val_loader = load_feature_dataset(
-        data_directory="datas/features/MFCC/EMODB_MFCC_96", batch_size=4, val_split=0.2
-    )
+    train_loader, val_loader = load_feature_dataset(data_directory="datas/features/MFCC/EMODB_MFCC_96", batch_size=4, val_split=0.2)
 
     print("📊 Previewing one batch:")
     for features, labels in train_loader:
