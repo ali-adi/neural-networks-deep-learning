@@ -754,301 +754,514 @@ where $\beta$ is the Lipschitz constant.
 
 #### 1.1 Audio Preprocessing
 ```python
-class AudioPreprocessor:
-    def __init__(self, sample_rate=16000, pre_emphasis=0.97):
-        self.sample_rate = sample_rate
-        self.pre_emphasis = pre_emphasis
-        
-    def preprocess(self, audio_path):
-        # Load and resample audio
-        waveform, _ = librosa.load(audio_path, sr=self.sample_rate)
-        
-        # Apply pre-emphasis filter
-        emphasized = np.append(
-            waveform[0],
-            waveform[1:] - self.pre_emphasis * waveform[:-1]
-        )
-        
-        # Normalize
-        normalized = emphasized / np.max(np.abs(emphasized))
-        
-        return normalized
+# src/data_processing/extract_feature.py (lines 15-20)
+def extract_mfcc(audio_path, n_mfcc=96, sample_rate=16000):
+    """Extract MFCC features from audio file"""
+    y, sr = librosa.load(audio_path, sr=sample_rate)
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc)
+    return mfcc.T  # Transpose to get (time_steps, n_mfcc)
 ```
 
 #### 1.2 Feature Extraction
 ```python
-class FeatureExtractor:
-    def __init__(self):
-        self.mfcc_extractor = MFCCExtractor(n_mfcc=96)
-        self.logmel_extractor = LogMelExtractor(n_mels=128)
-        self.hubert_extractor = HuBERTExtractor()
-        
-    def extract_features(self, audio):
-        # Extract MFCC features
-        mfcc = self.mfcc_extractor(audio)
-        
-        # Extract LogMel features
-        logmel = self.logmel_extractor(audio)
-        
-        # Extract HuBERT features
-        hubert = self.hubert_extractor(audio)
-        
-        return {
-            'mfcc': mfcc,
-            'logmel': logmel,
-            'hubert': hubert
-        }
+# src/data_processing/extract_feature.py (lines 22-30)
+def extract_logmel(audio_path, sample_rate=16000, n_mels=128):
+    """Extract log-mel spectrogram from audio file"""
+    y, sr = librosa.load(audio_path, sr=sample_rate)
+    mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels)
+    log_mel = librosa.power_to_db(mel_spec, ref=np.max)
+    return log_mel.T  # Transpose to get (time_steps, n_mels)
+
+# src/data_processing/extract_feature.py (lines 32-45)
+def extract_hubert(audio_path):
+    """Extract HuBERT embeddings from audio file"""
+    # Load HuBERT model
+    model = get_hubert_model()
+    
+    # Load and preprocess audio
+    waveform, sample_rate = torchaudio.load(audio_path)
+    if sample_rate != 16000:
+        resampler = torchaudio.transforms.Resample(sample_rate, 16000)
+        waveform = resampler(waveform)
+    
+    # Extract features
+    with torch.no_grad():
+        features = model(waveform)
+    
+    return features.squeeze().numpy().T  # Transpose to get (time_steps, feature_dim)
 ```
 
 ### 2. Model Architecture Implementation
 
-#### 2.1 Feature Processing Module
+#### 2.1 Temporal Convolutional Network
 ```python
-class FeatureProcessor(nn.Module):
-    def __init__(self, feature_dims):
-        super().__init__()
-        self.feature_streams = nn.ModuleDict({
-            'mfcc': MFCCStream(feature_dims['mfcc']),
-            'logmel': LogMelStream(feature_dims['logmel']),
-            'hubert': HuBERTStream(feature_dims['hubert'])
-        })
-        self.fusion = FeatureFusion(feature_dims)
+# src/models/model.py (lines 45-75)
+def temporal_block(
+    inputs, dilation, activation, nb_filters, kernel_size, dropout_rate=0.0
+):
+    """Temporal block with dilated convolution and residual connection"""
+    # First convolution block
+    conv1 = tf.keras.layers.Conv1D(
+        filters=nb_filters,
+        kernel_size=kernel_size,
+        dilation_rate=dilation,
+        padding="causal",
+        activation=activation,
+    )(inputs)
+    conv1 = tf.keras.layers.BatchNormalization()(conv1)
+    conv1 = tf.keras.layers.Dropout(dropout_rate)(conv1)
+    
+    # Second convolution block
+    conv2 = tf.keras.layers.Conv1D(
+        filters=nb_filters,
+        kernel_size=kernel_size,
+        dilation_rate=dilation,
+        padding="causal",
+        activation=activation,
+    )(conv1)
+    conv2 = tf.keras.layers.BatchNormalization()(conv2)
+    conv2 = tf.keras.layers.Dropout(dropout_rate)(conv2)
+    
+    # Residual connection
+    if inputs.shape[-1] == nb_filters:
+        res = inputs
+    else:
+        res = tf.keras.layers.Conv1D(
+            filters=nb_filters, kernel_size=1, padding="causal"
+        )(inputs)
+    
+    # Add residual connection
+    out = tf.keras.layers.Add()([conv2, res])
+    out = tf.keras.layers.Activation(activation)(out)
+    
+    return out
+
+# src/models/model.py (lines 77-150)
+class TemporalConvNet:
+    """Temporal Convolutional Network with dilated convolutions"""
+    def __init__(
+        self,
+        nb_filters=64,
+        kernel_size=2,
+        nb_stacks=1,
+        dilations=8,
+        activation="relu",
+        dropout_rate=0.1,
+        name="TemporalConvNet",
+    ):
+        self.nb_filters = nb_filters
+        self.kernel_size = kernel_size
+        self.nb_stacks = nb_stacks
+        self.dilations = dilations
+        self.activation = activation
+        self.dropout_rate = dropout_rate
+        self.name = name
         
-    def forward(self, features):
-        # Process each feature stream
-        processed = {}
-        for name, stream in self.feature_streams.items():
-            processed[name] = stream(features[name])
+    def __call__(self, inputs):
+        # Process forward direction
+        forward = inputs
+        
+        # Stack temporal blocks with increasing dilation
+        for stack in range(self.nb_stacks):
+            for dilation in [2**i for i in range(self.dilations)]:
+                forward = temporal_block(
+                    inputs=forward,
+                    dilation=dilation,
+                    activation=self.activation,
+                    nb_filters=self.nb_filters,
+                    kernel_size=self.kernel_size,
+                    dropout_rate=self.dropout_rate,
+                )
+        
+        # Process backward direction (reversed input)
+        backward = tf.reverse(inputs, axis=[1])
+        
+        # Stack temporal blocks with increasing dilation
+        for stack in range(self.nb_stacks):
+            for dilation in [2**i for i in range(self.dilations)]:
+                backward = temporal_block(
+                    inputs=backward,
+                    dilation=dilation,
+                    activation=self.activation,
+                    nb_filters=self.nb_filters,
+                    kernel_size=self.kernel_size,
+                    dropout_rate=self.dropout_rate,
+                )
+        
+        # Reverse back to original order
+        backward = tf.reverse(backward, axis=[1])
+        
+        # Concatenate forward and backward
+        return tf.keras.layers.Concatenate()([forward, backward])
+```
+
+#### 2.2 Feature Aggregation with Attention
+```python
+# src/models/model.py (lines 152-170)
+class WeightLayer(tf.keras.layers.Layer):
+    """Learnable attention weights for feature aggregation"""
+    def build(self, input_shape):
+        self.weights = self.add_weight(
+            name="attention_weights",
+            shape=(input_shape[-1],),
+            initializer="ones",
+            trainable=True,
+        )
+        super(WeightLayer, self).build(input_shape)
+        
+    def call(self, inputs):
+        # Apply softmax to get normalized weights
+        weights = tf.nn.softmax(self.weights)
+        
+        # Apply weights to input
+        return inputs * weights
+```
+
+#### 2.3 Domain Adaptation with LMMD
+```python
+# src/models/lmmd_loss.py (lines 15-45)
+def gaussian_kernel(source, target, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
+    """Calculate the RBF (Gaussian) kernel between source and target"""
+    n_samples = tf.shape(source)[0] + tf.shape(target)[0]
+    total = tf.concat([source, target], axis=0)
+    
+    # Calculate pairwise distances
+    total0 = tf.expand_dims(total, 0)
+    total0 = tf.tile(total0, [n_samples, 1, 1])
+    total1 = tf.expand_dims(total, 1)
+    total1 = tf.tile(total1, [1, n_samples, 1])
+    
+    L2_distance = tf.reduce_sum(tf.square(total0 - total1), axis=2)
+    
+    # Calculate kernel bandwidth
+    if fix_sigma is None:
+        bandwidth = tf.reduce_sum(L2_distance) / (n_samples**2 - n_samples)
+        bandwidth /= kernel_mul ** (kernel_num // 2)
+    else:
+        bandwidth = fix_sigma
+    
+    # Multiple kernel bandwidths
+    bandwidth_list = [bandwidth * (kernel_mul**i) for i in range(kernel_num)]
+    
+    # Calculate kernel values
+    kernel_val = [tf.exp(-L2_distance / bandwidth_temp) for bandwidth_temp in bandwidth_list]
+    
+    return tf.reduce_sum(kernel_val, axis=0)
+
+# src/models/lmmd_loss.py (lines 47-90)
+def lmmd_loss(
+    source_features,
+    target_features,
+    source_labels,
+    target_pseudo_labels,
+    num_classes,
+    kernel_mul=2.0,
+    kernel_num=5,
+    fix_sigma=None,
+):
+    """Local Maximum Mean Discrepancy loss for domain adaptation"""
+    total_loss = 0.0
+    
+    # Class-conditional alignment
+    for class_idx in range(num_classes):
+        # Select class-specific features
+        source_mask = tf.equal(source_labels, class_idx)
+        source_class = tf.boolean_mask(source_features, source_mask)
+        
+        target_mask = tf.equal(target_pseudo_labels, class_idx)
+        target_class = tf.boolean_mask(target_features, target_mask)
+        
+        # Calculate MMD for this class
+        if tf.shape(source_class)[0] > 0 and tf.shape(target_class)[0] > 0:
+            kernel_val = gaussian_kernel(
+                source_class, 
+                target_class,
+                kernel_mul=kernel_mul,
+                kernel_num=kernel_num,
+                fix_sigma=fix_sigma
+            )
             
-        # Fuse features
-        return self.fusion(list(processed.values()))
-```
-
-#### 2.2 Temporal Modeling Module
-```python
-class TemporalModel(nn.Module):
-    def __init__(self, input_dim, num_levels=3):
-        super().__init__()
-        self.dtpm = EnhancedDTPM(
-            num_levels=num_levels,
-            feature_dim=input_dim
-        )
-        self.attention = MultiHeadAttention(
-            d_model=input_dim,
-            num_heads=8
-        )
-        
-    def forward(self, x):
-        # DTPM feature extraction
-        dtpm_features = self.dtpm(x)
-        
-        # Self-attention
-        attended = self.attention(
-            dtpm_features,
-            dtpm_features,
-            dtpm_features
-        )
-        
-        return attended
-```
-
-#### 2.3 Domain Adaptation Module
-```python
-class DomainAdapter(nn.Module):
-    def __init__(self, num_classes):
-        super().__init__()
-        self.lmmd = LMMD(
-            num_classes=num_classes,
-            kernel_mul=2.0,
-            kernel_num=5
-        )
-        
-    def forward(self, source_features, target_features, source_labels):
-        return self.lmmd(
-            source_features,
-            target_features,
-            source_labels
-        )
+            # Calculate MMD loss
+            loss = mmd_loss_from_kernel(
+                kernel_val,
+                tf.shape(source_class)[0],
+                tf.shape(target_class)[0]
+            )
+            
+            total_loss += loss
+    
+    return total_loss / num_classes
 ```
 
 ### 3. Training Implementation
 
-#### 3.1 Training Manager
+#### 3.1 Model Training
 ```python
-class TrainingManager:
-    def __init__(self, config):
-        self.model = EmotionRecognitionModel(config)
-        self.domain_adapter = DomainAdapter(config.num_classes)
-        self.optimizer = Adam(
-            self.model.parameters(),
-            lr=config.learning_rate,
-            betas=(config.beta1, config.beta2)
-        )
-        self.scheduler = CosineAnnealingLR(
-            self.optimizer,
-            T_max=config.epochs,
-            eta_min=config.min_lr
+# src/models/model.py (lines 172-250)
+class SpeechEmotionModel:
+    """Speech Emotion Recognition model with domain adaptation"""
+    def __init__(self, input_shape, class_labels, args):
+        self.input_shape = input_shape
+        self.class_labels = class_labels
+        self.args = args
+        self.model = self.create_model()
+        
+    def create_model(self):
+        """Create the model architecture"""
+        # Input layer
+        inputs = tf.keras.layers.Input(shape=self.input_shape)
+        
+        # Temporal convolutional network
+        tcn = TemporalConvNet(
+            nb_filters=self.args.filter_size,
+            kernel_size=self.args.kernel_size,
+            nb_stacks=self.args.stack_size,
+            dilations=self.args.dilation_size,
+            activation=self.args.activation,
+            dropout_rate=self.args.dropout
+        )(inputs)
+        
+        # Feature aggregation with attention
+        weighted = WeightLayer()(tcn)
+        
+        # Global average pooling
+        pooled = tf.keras.layers.GlobalAveragePooling1D()(weighted)
+        
+        # Classification head
+        x = tf.keras.layers.Dense(1024, activation="relu")(pooled)
+        x = tf.keras.layers.Dropout(0.4)(x)
+        x = tf.keras.layers.Dense(512, activation="relu")(x)
+        x = tf.keras.layers.Dropout(0.4)(x)
+        outputs = tf.keras.layers.Dense(len(self.class_labels), activation="softmax")(x)
+        
+        # Create model
+        model = tf.keras.Model(inputs=inputs, outputs=outputs)
+        
+        # Compile model
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(
+                learning_rate=self.args.lr,
+                beta_1=self.args.beta1,
+                beta_2=self.args.beta2
+            ),
+            loss="categorical_crossentropy",
+            metrics=["accuracy"]
         )
         
-    def train_epoch(self, source_loader, target_loader):
-        self.model.train()
-        total_loss = 0
+        return model
+    
+    def train(self, x, y):
+        """Train the model using k-fold cross-validation"""
+        # Initialize k-fold cross-validation
+        kfold = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=42)
         
-        for source_batch, target_batch in zip(source_loader, target_loader):
-            # Forward pass
-            source_pred = self.model(source_batch['audio'])
-            target_pred = self.model(target_batch['audio'])
+        # Initialize metrics storage
+        fold_metrics = []
+        
+        # Train on each fold
+        for fold_idx, (train_idx, val_idx) in enumerate(kfold.split(x)):
+            # Split data
+            x_train, x_val = x[train_idx], x[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
             
-            # Extract features
-            source_features = self.model.get_features(source_batch['audio'])
-            target_features = self.model.get_features(target_batch['audio'])
+            # Apply label smoothing
+            y_train_smooth = smooth_labels(y_train, factor=0.1)
             
-            # Calculate losses
-            class_loss = F.cross_entropy(
-                source_pred,
-                source_batch['labels']
+            # Train model
+            history = self.model.fit(
+                x_train, y_train_smooth,
+                validation_data=(x_val, y_val),
+                epochs=self.args.epoch,
+                batch_size=self.args.batch_size,
+                callbacks=[
+                    tf.keras.callbacks.EarlyStopping(
+                        monitor="val_loss",
+                        patience=10,
+                        restore_best_weights=True
+                    )
+                ]
             )
-            adapt_loss = self.domain_adapter(
-                source_features,
-                target_features,
-                source_batch['labels']
-            )
             
-            # Combined loss
-            loss = class_loss + self.config.lmmd_weight * adapt_loss
+            # Evaluate model
+            metrics = self.model.evaluate(x_val, y_val)
+            fold_metrics.append(metrics)
             
-            # Optimization
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config.max_grad_norm
-            )
-            self.optimizer.step()
-            
-            total_loss += loss.item()
-            
-        self.scheduler.step()
-        return total_loss / len(source_loader)
+            # Save best model
+            if fold_idx == 0 or metrics[1] > best_accuracy:
+                best_accuracy = metrics[1]
+                self.model.save_weights(f"{self.args.model_path}/best_model.h5")
+        
+        return fold_metrics
 ```
 
-#### 3.2 Evaluation Manager
+#### 3.2 Domain Adaptation Training
 ```python
-class EvaluationManager:
-    def __init__(self, model, metrics):
-        self.model = model
-        self.metrics = metrics
+# src/training/main.py (lines 200-300)
+def train_with_domain_adaptation(
+    self, source_data, source_labels, target_data, target_labels=None
+):
+    """Train the model with domain adaptation"""
+    # Initialize optimizer
+    optimizer = tf.keras.optimizers.Adam(
+        learning_rate=self.args.lr,
+        beta_1=self.args.beta1,
+        beta_2=self.args.beta2
+    )
+    
+    # Initialize LMMD loss
+    lmmd_loss_fn = get_lmmd_loss(
+        num_classes=len(self.class_labels),
+        kernel_mul=2.0,
+        kernel_num=5,
+        weight=self.args.lmmd_weight
+    )
+    
+    # Training loop
+    for epoch in range(self.args.epoch):
+        # Shuffle data
+        source_idx = np.random.permutation(len(source_data))
+        target_idx = np.random.permutation(len(target_data))
         
-    def evaluate(self, dataloader):
-        self.model.eval()
-        predictions = []
-        labels = []
-        
-        with torch.no_grad():
-            for batch in dataloader:
+        # Batch training
+        for batch_idx in range(0, len(source_data), self.args.batch_size):
+            # Get batch indices
+            source_batch_idx = source_idx[batch_idx:batch_idx+self.args.batch_size]
+            target_batch_idx = target_idx[batch_idx:batch_idx+self.args.batch_size]
+            
+            # Get batch data
+            source_batch = source_data[source_batch_idx]
+            source_labels_batch = source_labels[source_batch_idx]
+            target_batch = target_data[target_batch_idx]
+            
+            # Get target pseudo-labels if available
+            if target_labels is not None:
+                target_labels_batch = target_labels[target_batch_idx]
+            else:
+                # Generate pseudo-labels using source model
+                target_pred = self.model.predict(target_batch)
+                target_labels_batch = np.argmax(target_pred, axis=1)
+            
+            # Train step
+            with tf.GradientTape() as tape:
                 # Forward pass
-                outputs = self.model(batch['audio'])
-                predictions.extend(outputs.argmax(dim=1).cpu().numpy())
-                labels.extend(batch['labels'].cpu().numpy())
+                source_pred = self.model(source_batch, training=True)
+                target_pred = self.model(target_batch, training=True)
                 
-        # Calculate metrics
-        results = {}
-        for metric_name, metric_fn in self.metrics.items():
-            results[metric_name] = metric_fn(labels, predictions)
+                # Extract features for domain adaptation
+                source_features = self.model.get_features(source_batch)
+                target_features = self.model.get_features(target_batch)
+                
+                # Calculate losses
+                class_loss = tf.keras.losses.categorical_crossentropy(
+                    source_labels_batch, source_pred
+                )
+                adapt_loss = lmmd_loss_fn(
+                    source_features,
+                    target_features,
+                    np.argmax(source_labels_batch, axis=1),
+                    target_labels_batch
+                )
+                
+                # Combined loss
+                total_loss = class_loss + self.args.lmmd_weight * adapt_loss
             
-        return results
-```
-
-### 4. Utility Functions
-
-#### 4.1 Data Loading
-```python
-class EmotionDataset(Dataset):
-    def __init__(self, audio_paths, labels, feature_extractor):
-        self.audio_paths = audio_paths
-        self.labels = labels
-        self.feature_extractor = feature_extractor
-        
-    def __len__(self):
-        return len(self.audio_paths)
-        
-    def __getitem__(self, idx):
-        # Load and preprocess audio
-        audio = self.feature_extractor(self.audio_paths[idx])
-        
-        return {
-            'audio': audio,
-            'labels': self.labels[idx]
-        }
-```
-
-#### 4.2 Metrics Calculation
-```python
-class MetricsCalculator:
-    def __init__(self):
-        self.metrics = {
-            'accuracy': accuracy_score,
-            'f1': f1_score,
-            'precision': precision_score,
-            'recall': recall_score
-        }
-        
-    def calculate(self, y_true, y_pred):
-        results = {}
-        for metric_name, metric_fn in self.metrics.items():
-            results[metric_name] = metric_fn(
-                y_true,
-                y_pred,
-                average='weighted'
+            # Calculate gradients
+            gradients = tape.gradient(total_loss, self.model.trainable_variables)
+            
+            # Clip gradients
+            gradients, _ = tf.clip_by_global_norm(
+                gradients, self.args.max_grad_norm
             )
-        return results
+            
+            # Apply gradients
+            optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+```
+
+### 4. Evaluation Implementation
+
+#### 4.1 Model Evaluation
+```python
+# src/training/main.py (lines 302-350)
+def evaluate_test(
+    self, x_test, y_test, path=None, result_filename=None, result_dir=None
+):
+    """Evaluate the model on test data"""
+    # Load best model weights
+    if path is not None:
+        self._load_weights(path)
+    
+    # Make predictions
+    y_pred = self.model.predict(x_test)
+    y_pred_classes = np.argmax(y_pred, axis=1)
+    y_true_classes = np.argmax(y_test, axis=1)
+    
+    # Calculate metrics
+    accuracy = np.mean(y_pred_classes == y_true_classes)
+    confusion_matrix = confusion_matrix(y_true_classes, y_pred_classes)
+    classification_report = classification_report(
+        y_true_classes, y_pred_classes, target_names=self.class_labels
+    )
+    
+    # Save results
+    if result_filename is not None and result_dir is not None:
+        self._save_results_to_excel(
+            f"{result_dir}/{result_filename}.xlsx",
+            confusion_matrix,
+            classification_report,
+            accuracy,
+            self.class_labels
+        )
+    
+    return accuracy, confusion_matrix, classification_report
 ```
 
 ### 5. Configuration Management
 
 #### 5.1 Model Configuration
 ```python
-@dataclass
+# src/models/model.py (lines 352-370)
 class ModelConfig:
-    # Feature processing
-    mfcc_dim: int = 96
-    logmel_dim: int = 128
-    hubert_dim: int = 768
-    
-    # Temporal modeling
-    num_levels: int = 3
-    dilation_rates: List[int] = field(
-        default_factory=lambda: [1, 2, 4, 8, 16]
-    )
-    
-    # Attention
-    num_heads: int = 8
-    dropout: float = 0.1
-    
-    # Domain adaptation
-    lmmd_weight: float = 0.5
-    kernel_mul: float = 2.0
-    kernel_num: int = 5
+    """Configuration for the Speech Emotion Recognition model"""
+    def __init__(self):
+        # Feature processing
+        self.mfcc_dim = 96
+        self.logmel_dim = 128
+        self.hubert_dim = 768
+        
+        # Temporal modeling
+        self.num_levels = 3
+        self.dilation_rates = [1, 2, 4, 8, 16]
+        
+        # Attention
+        self.num_heads = 8
+        self.dropout = 0.1
+        
+        # Domain adaptation
+        self.lmmd_weight = 0.5
+        self.kernel_mul = 2.0
+        self.kernel_num = 5
 ```
 
 #### 5.2 Training Configuration
 ```python
-@dataclass
+# src/training/main.py (lines 372-390)
 class TrainingConfig:
-    # Optimization
-    learning_rate: float = 0.0003
-    beta1: float = 0.93
-    beta2: float = 0.98
-    max_grad_norm: float = 1.0
-    
-    # Training process
-    batch_size: int = 32
-    epochs: int = 300
-    min_lr: float = 1e-6
-    
-    # Validation
-    val_frequency: int = 1
-    early_stopping_patience: int = 10
+    """Configuration for model training"""
+    def __init__(self):
+        # Optimization
+        self.learning_rate = 0.0003
+        self.beta1 = 0.93
+        self.beta2 = 0.98
+        self.max_grad_norm = 1.0
+        
+        # Training process
+        self.batch_size = 32
+        self.epochs = 300
+        self.min_lr = 1e-6
+        
+        # Validation
+        self.val_frequency = 1
+        self.early_stopping_patience = 10
 ```
 
 ## Performance Analysis
