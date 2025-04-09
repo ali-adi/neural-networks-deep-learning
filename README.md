@@ -25,11 +25,7 @@ Place your datasets in the `data/` directory with the following structure:
 ```
 data/raw/
     ├── EMODB/
-    │   ├── features/
-    │   └── labels/
     └── RAVDESS/
-        ├── features/
-        └── labels/
 ```
 
 ### 3. Training
