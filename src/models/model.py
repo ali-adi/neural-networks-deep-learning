@@ -71,7 +71,7 @@ import matplotlib.pyplot as plt
 # Standard libraries
 import numpy as np
 import pandas as pd
-import seaborn as sns
+import gc  # Add garbage collector
 
 # TensorFlow imports
 import tensorflow as tf
@@ -82,7 +82,7 @@ from sklearn.metrics import auc, classification_report, confusion_matrix, roc_cu
 from sklearn.model_selection import KFold
 from tensorflow.keras import callbacks
 from tensorflow.keras.activations import sigmoid
-from tensorflow.keras.layers import Activation, BatchNormalization, Conv1D, Dense, GlobalAveragePooling1D, Input, Lambda, SpatialDropout1D, add
+from tensorflow.keras.layers import Activation, BatchNormalization, Conv1D, Dense, GlobalAveragePooling1D, Input, Lambda, SpatialDropout1D, add, Dropout
 from tensorflow.keras.models import Model as KerasModel
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.preprocessing.sequence import pad_sequences
@@ -209,962 +209,799 @@ class SpeechEmotionModel:
         self.class_labels = class_labels
         self.input_shape = input_shape
         self.args = args
-
-        # Optional - Use Metal GPU for Apple Silicon, CUDA for NVIDIA
-        try:
-            with tf.device("/device:GPU:0"):
-                tf.zeros((1, 1))
-                print("✅ Model will use Metal GPU for computation")
-        except:
-            print("⚠️ GPU not available, using CPU for computation")
-
-        # Store matrix for confusion matrix for k-fold cross-validation
-        self.matrix = []
-        self.eva_matrix = []
-        self.acc = 0
         self.model = None
         self.trained = False
         self.best_fold_acc = 0
         self.best_fold_weight_path = None
-        # timestamp for saving models
         self.now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        # Directory to save results
-        self.result_dir = os.path.join(args.result_path, args.data)
-
-        # Add training history tracking
+        
+        # Set up directories following project structure
+        feature_type = args.feature_type.upper()
+        
+        # Base directories
+        self.base_saved_models = os.path.join("saved_models", feature_type)
+        self.base_test_models = os.path.join("test_models", args.data, feature_type)
+        self.base_results = os.path.join("results", feature_type)
+        
+        if args.mode.startswith('test'):
+            # For testing, use test_models directory
+            self.model_dir = self.base_test_models
+        else:
+            # For training, create a unique session folder under saved_models
+            session_name = f"{args.data}_{feature_type}_{self.now}"
+            self.model_dir = os.path.join(self.base_saved_models, session_name)
+            
+        # Results directory is always under results/FEATURE_TYPE
+        self.result_dir = self.base_results
+        
+        # Create all necessary directories
+        os.makedirs(self.base_saved_models, exist_ok=True)
+        os.makedirs(self.base_test_models, exist_ok=True)
+        os.makedirs(self.base_results, exist_ok=True)
+        os.makedirs(self.model_dir, exist_ok=True)
+        
+        print("\n📁 Directory Structure:")
+        print(f"   Model directory: {self.model_dir}")
+        print(f"   Results directory: {self.result_dir}")
+        
+        # Initialize tracking variables
         self.fold_histories = []
         self.training_metrics = {"acc": [], "val_acc": [], "loss": [], "val_loss": []}
-
-        print(f"🧠 Initialized SER model with input shape: {input_shape}")
-
-        # Use the actual number of provided class labels
         self.num_classes = len(class_labels)
-        print(f"📊 Model output will use {self.num_classes} classes")
-
-        self.use_lmmd = hasattr(args, "use_lmmd") and args.use_lmmd
-
-        # Initialize LMMD loss if needed
+        self.use_lmmd = args.mode == "train-lmmd"
+        self.matrix = []  # Initialize matrix list for confusion matrices
+        
         if self.use_lmmd:
             try:
                 from .lmmd_loss import LMMDLoss
-
-                self.lmmd_loss = LMMDLoss(
-                    num_classes=self.num_classes,
-                    weight=0.5,  # Weight for LMMD loss (can be tuned)
-                    kernel_mul=2.0,
-                    kernel_num=5,
-                )
-                print(f"✅ LMMD Loss initialized with {self.num_classes} classes")
+                self.lmmd_loss = LMMDLoss(weight=args.lmmd_weight, num_classes=self.num_classes)
             except ImportError:
-                print("⚠️ Could not import LMMD loss, falling back to regular training")
+                print("⚠️ LMMD loss module not found. Domain adaptation will not be performed.")
                 self.use_lmmd = False
 
-    def create_model(self):
-        print("\n🛠️ Building model architecture...")
+    def _create_model_architecture(self, tcn):
+        """Create the model architecture without compilation"""
+        # Input layer
+        inputs = Input(shape=self.input_shape)
 
         # Handle different types of input shapes
         if len(self.input_shape) == 1:  # 1D input (like plain HUBERT features)
-            inputs = Input(shape=(self.input_shape[0],))
             x = Dense(self.args.filter_size, activation=self.args.activation)(inputs)
             x = Dense(self.args.filter_size, activation=self.args.activation)(x)
             outputs = Dense(self.num_classes, activation="softmax")(x)
         else:  # 2D input (like MFCC or LogMel spectrograms)
-            inputs = Input(shape=(self.input_shape[0], self.input_shape[1]))
-            conv_net = TemporalConvNet(
-                nb_filters=self.args.filter_size,
-                kernel_size=self.args.kernel_size,
-                nb_stacks=self.args.stack_size,
-                dilations=self.args.dilation_size,
-                dropout_rate=self.args.dropout,
-                activation=self.args.activation,
-            )
+            conv_net = tcn
             conv_output = conv_net(inputs)
             attention_out = WeightLayer()(conv_output)
             outputs = Dense(self.num_classes, activation="softmax")(attention_out)
 
+        return KerasModel(inputs=inputs, outputs=outputs)
+
+    def create_model(self):
+        """Create the model architecture"""
+        # Input layer
+        inputs = Input(shape=self.input_shape)
+
+        # Temporal convolutional network
+        tcn = TemporalConvNet(
+            nb_filters=self.args.filter_size,
+            kernel_size=self.args.kernel_size,
+            nb_stacks=self.args.stack_size,
+            dilations=self.args.dilation_size,
+            activation=self.args.activation,
+            dropout_rate=self.args.dropout
+        )(inputs)
+
+        # Attention mechanism
+        attention_out = WeightLayer()(tcn)
+        
+        # Feature extraction layers with smaller dimensions
+        x = Dense(128, activation="relu", name="feature_layer_1")(attention_out)
+        x = Dropout(0.4)(x)
+        x = Dense(64, activation="relu", name="feature_layer_2")(x)
+        x = Dropout(0.4)(x)
+        
+        # Classification head
+        outputs = Dense(self.num_classes, activation="softmax")(x)
+
+        # Create model
         self.model = KerasModel(inputs=inputs, outputs=outputs)
+        self._compile_model()
+        
+        # Store feature extraction model
+        self.feature_model = KerasModel(
+            inputs=self.model.input,
+            outputs=self.model.get_layer("feature_layer_2").output,
+            name="feature_extractor"
+        )
+        
+        return self.model
+
+    def _compile_model(self, loss=None):
+        """Helper method to compile the model with consistent settings"""
         optimizer = Adam(
             learning_rate=self.args.lr,
             beta_1=self.args.beta1,
             beta_2=self.args.beta2,
             epsilon=1e-8,
         )
-        self.model.compile(loss="categorical_crossentropy", optimizer=optimizer, metrics=["accuracy"])
-        print("✅ Model compiled successfully!\n")
-
-    def train(self, x, y):
-        print("🎯 Starting k-fold training...")
-        # Pad sequences if needed
-        if isinstance(x, list) or len(x.shape) != 3:
-            # For 1D data (like pure HuBERT features), reshape if needed
-            if len(x.shape) == 1:
-                # This is an object array of variable length features
-                print(f"🔄 Reshaping data from object array, first element shape: {x[0].shape if x.size > 0 else 'unknown'}")
-                # If it's a list or object array, we need to convert it
-                if x.dtype == object:
-                    # Check shape of first item to determine format
-                    if len(x[0].shape) == 1:
-                        # 1D features (HuBERT embeddings)
-                        self.input_shape = (x[0].shape[0],)
-                    else:
-                        # Try to pad if they're 2D features
-                        x = pad_sequences(x, padding="post", dtype="float32")
-                        self.input_shape = x.shape[1:]
-                else:
-                    self.input_shape = (x.shape[0],)
-            else:
-                # For 2D arrays, pad sequences
-                x = pad_sequences(x, padding="post", dtype="float32")
-                self.input_shape = x.shape[1:]
-        else:
-            # Update input shape for 3D data
-            self.input_shape = x.shape[1:]
-
-        print(f"🔍 Using input shape for model: {self.input_shape}")
-
-        save_dir = self.args.model_path
-        os.makedirs(save_dir, exist_ok=True)
-        os.makedirs(self.result_dir, exist_ok=True)
-        test_model_dir = os.path.join("test_models", self.args.data)
-        os.makedirs(test_model_dir, exist_ok=True)
-        kfold = KFold(
-            n_splits=self.args.split_fold,
-            shuffle=True,
-            random_state=self.args.random_seed,
+        
+        # Use provided loss or default to categorical_crossentropy
+        if loss is None:
+            loss = "categorical_crossentropy"
+            
+        self.model.compile(
+            loss=loss,
+            optimizer=optimizer,
+            metrics=["accuracy"]
         )
-        avg_acc, avg_loss = 0, 0
 
-        # Initialize fold tracking
-        fold_metrics = []
+    def _setup_training(self, x, save_dir):
+        """Helper method to setup training environment"""
+        # Initialize k-fold cross validation
+        kfold = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=self.args.random_seed)
+        
+        # Store metrics for each fold
+        fold_metrics = {
+            'acc': [], 'val_acc': [], 'loss': [], 'val_loss': []
+        }
+        
+        # Create directory for saving models
+        os.makedirs(save_dir, exist_ok=True)
+        
+        print(f"🔍 Using input shape for model: {self.input_shape}")
+        print(f"📁 Saving models to: {save_dir}")
+        
+        return kfold, fold_metrics
 
-        # Create a unique model folder for this training session
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        session_folder = os.path.join(save_dir, f"{self.args.data}_{self.args.feature_type}_{timestamp}")
-        os.makedirs(session_folder, exist_ok=True)
-        print(f"📁 Saving models to: {session_folder}")
+    def _train_loop(self, x, y, is_domain_adaptation=False, target_data=None):
+        """Common training loop for both regular and domain adaptation training"""
+        # Setup training environment
+        kfold = KFold(n_splits=self.args.split_fold, shuffle=True, random_state=self.args.random_seed)
+        fold_metrics = {'acc': [], 'val_acc': [], 'loss': [], 'val_loss': []}
+        
+        # If doing domain adaptation, adjust target data size to match source data
+        if is_domain_adaptation and target_data is not None:
+            rng = np.random.RandomState(self.args.random_seed)
+            if len(target_data) > len(x):
+                # Subsample target data if it's larger
+                target_indices = rng.choice(len(target_data), size=len(x), replace=False)
+                target_data = target_data[target_indices]
+            elif len(target_data) < len(x):
+                # Oversample target data if it's smaller
+                target_indices = rng.choice(len(target_data), size=len(x), replace=True)
+                target_data = target_data[target_indices]
+        
+        print(f"🎯 Starting {'domain adaptation' if is_domain_adaptation else 'k-fold'} training...")
+        print(f"🔍 Using input shape for model: {self.input_shape}")
+        print(f"📁 Saving models to: {self.model_dir}")
+        
+        # K-fold cross validation
+        for fold, (train_idx, val_idx) in enumerate(kfold.split(x), 1):
+            fold_metrics = self._train_fold(
+                fold, train_idx, val_idx, x, y, 
+                self.model_dir, fold_metrics,
+                is_domain_adaptation=is_domain_adaptation,
+                target_data=target_data
+            )
+        
+        # Plot combined metrics across all folds
+        self._plot_combined_training_metrics(fold_metrics, self.model_dir)
+        
+        return self.best_fold_weight_path
 
-        for fold_idx, (train_idx, test_idx) in enumerate(kfold.split(x, y), 1):
-            print(f"🔁 Fold {fold_idx}/{self.args.split_fold}")
-
-            self.create_model()
-            y_train_smoothed = smooth_labels(copy.deepcopy(y[train_idx]), 0.1)
-            weight_name = f"{self.args.split_fold}-fold_weights_best_{fold_idx}.weights.h5"
-            weight_path = os.path.join(session_folder, weight_name)
-
-            # Set up ModelCheckpoint to save best weights during training
-            checkpoint_callback = callbacks.ModelCheckpoint(
-                weight_path,
-                monitor="val_accuracy",
-                verbose=1,
+    def _train_fold(self, fold, train_idx, val_idx, x, y, save_dir, fold_metrics, is_domain_adaptation=False, target_data=None):
+        """Train a single fold of the model"""
+        print(f"🔁 Fold {fold}/{self.args.split_fold}")
+        
+        # Split source data
+        x_train, x_val = x[train_idx], x[val_idx]
+        y_train, y_val = y[train_idx], y[val_idx]
+        
+        # Split target data if doing domain adaptation
+        if is_domain_adaptation and target_data is not None:
+            target_train = target_data[train_idx]
+            target_val = target_data[val_idx]
+            print(f"Source train shape: {x_train.shape}")
+            print(f"Target train shape: {target_train.shape}")
+        
+        # Create model for this fold
+        self.create_model()
+        
+        # Setup callbacks with proper checkpoint path
+        checkpoint_base = os.path.join(save_dir, f"{self.args.split_fold}-fold_weights_best_{fold}")
+        callbacks_list = [
+            tf.keras.callbacks.ModelCheckpoint(
+                checkpoint_base,  # TensorFlow will automatically add .index and .data-* extensions
+                monitor='val_accuracy',
                 save_best_only=True,
                 save_weights_only=True,
-                mode="max",
+                mode='max',
+                verbose=1
+            ),
+            tf.keras.callbacks.EarlyStopping(
+                monitor='val_accuracy',
+                patience=10,  # Increased patience to allow more epochs
+                restore_best_weights=True,
+                verbose=1  # Added verbose to see when early stopping triggers
             )
-
-            # Create a unique history object for this fold
+        ]
+        
+        # Train the model
+        if is_domain_adaptation and target_data is not None:
+            # Custom training loop for domain adaptation
+            optimizer = tf.keras.optimizers.Adam(
+                learning_rate=self.args.lr,
+                beta_1=self.args.beta1,
+                beta_2=self.args.beta2
+            )
+            
+            # For LMMD training, we'll store history manually
+            history_dict = {
+                'accuracy': [],
+                'val_accuracy': [],
+                'loss': [],
+                'val_loss': [],
+                'class_loss': [],
+                'adapt_loss': []
+            }
+            
+            # Training loop
+            best_val_acc = 0
+            patience_counter = 0
+            
+            for epoch in range(self.args.epoch):
+                print(f"Epoch {epoch + 1}/{self.args.epoch}")
+                
+                # Shuffle training data
+                indices = np.random.permutation(len(x_train))
+                x_train_shuffled = x_train[indices]
+                y_train_shuffled = y_train[indices]
+                target_train_shuffled = target_train[indices]  # Use same indices for target
+                
+                # Mini-batch training
+                progbar = tf.keras.utils.Progbar(len(x_train))
+                total_loss = 0
+                total_class_loss = 0
+                total_adapt_loss = 0
+                
+                # Process in smaller internal batches to save memory
+                actual_batch_size = min(self.args.batch_size, 16)  # Cap maximum batch size for memory efficiency
+                print(f"Using batch size of {actual_batch_size} for memory efficiency")
+                
+                for i in range(0, len(x_train), actual_batch_size):
+                    batch_x = x_train_shuffled[i:i + actual_batch_size]
+                    batch_y = y_train_shuffled[i:i + actual_batch_size]
+                    batch_target = target_train_shuffled[i:i + actual_batch_size]
+                    
+                    with tf.GradientTape() as tape:
+                        # Forward pass
+                        source_pred = self.model(batch_x, training=True)
+                        target_pred = self.model(batch_target, training=True)
+                        
+                        # Extract features using feature model
+                        source_features = self.feature_model(batch_x, training=True)
+                        target_features = self.feature_model(batch_target, training=True)
+                        
+                        # Calculate losses
+                        class_loss = tf.keras.losses.categorical_crossentropy(batch_y, source_pred)
+                        class_loss = tf.reduce_mean(class_loss)
+                        
+                        # Get pseudo labels for target domain
+                        target_pseudo_labels = tf.nn.softmax(target_pred)
+                        
+                        # Calculate LMMD loss
+                        adapt_loss = self.lmmd_loss.call(
+                            source_features=source_features,
+                            target_features=target_features,
+                            source_labels=batch_y,
+                            target_pseudo_labels=target_pseudo_labels,
+                            num_classes=self.num_classes
+                        )
+                        
+                        # Total loss
+                        batch_loss = class_loss + (self.args.lmmd_weight * adapt_loss)
+                    
+                    # Compute gradients and update weights
+                    gradients = tape.gradient(batch_loss, self.model.trainable_variables)
+                    optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+                    
+                    # Update metrics
+                    total_loss += batch_loss
+                    total_class_loss += class_loss
+                    total_adapt_loss += adapt_loss
+                    
+                    # Update progress bar
+                    progbar.add(len(batch_x), values=[
+                        ('total_loss', batch_loss),
+                        ('class_loss', class_loss),
+                        ('adapt_loss', adapt_loss)
+                    ])
+                
+                # Calculate average losses for the epoch
+                avg_loss = total_loss / (len(x_train) / self.args.batch_size)
+                avg_class_loss = total_class_loss / (len(x_train) / self.args.batch_size)
+                avg_adapt_loss = total_adapt_loss / (len(x_train) / self.args.batch_size)
+                
+                # Evaluate on validation set
+                val_loss, val_acc = self.model.evaluate(x_val, y_val, verbose=0)
+                print(f"\nEpoch {epoch + 1} Summary:")
+                print(f"Average Loss: {avg_loss:.4f}")
+                print(f"Classification Loss: {avg_class_loss:.4f}")
+                print(f"Adaptation Loss: {avg_adapt_loss:.4f}")
+                print(f"Validation Accuracy: {val_acc:.4f}")
+                
+                # Store metrics in history dictionary
+                train_loss = float(avg_loss)
+                train_acc = float(self.model.evaluate(x_train, y_train, verbose=0)[1])
+                
+                history_dict['accuracy'].append(train_acc)
+                history_dict['val_accuracy'].append(val_acc)
+                history_dict['loss'].append(train_loss)
+                history_dict['val_loss'].append(val_loss)
+                history_dict['class_loss'].append(float(avg_class_loss))
+                history_dict['adapt_loss'].append(float(avg_adapt_loss))
+                
+                # Save best model
+                if val_acc > best_val_acc:
+                    best_val_acc = val_acc
+                    self.model.save_weights(checkpoint_base)
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= 10:  # Early stopping
+                        print("Early stopping triggered")
+                        break
+            
+            # Use manually collected history for LMMD
+            history = history_dict
+        else:
+            # Regular training
+            # Cap batch size for memory efficiency
+            actual_batch_size = min(self.args.batch_size, 16)
+            print(f"Using batch size of {actual_batch_size} for memory efficiency")
+            
             history = self.model.fit(
-                x[train_idx],
-                y_train_smoothed,
-                validation_data=(x[test_idx], y[test_idx]),
-                batch_size=self.args.batch_size,
+                x_train,
+                y_train,
+                batch_size=actual_batch_size,
                 epochs=self.args.epoch,
-                verbose=1,
-                callbacks=[checkpoint_callback],
+                validation_data=(x_val, y_val),
+                callbacks=callbacks_list,
+                verbose=1
             )
+        
+        # Store metrics
+        if not is_domain_adaptation:
+            # For normal training, history is a keras History object with a history dict
+            history_dict = history.history
+            # Ensure we have all epochs
+            num_epochs = len(history_dict.get('accuracy', []))
+            print(f"\n📊 Fold {fold} History Information:")
+            print(f"   Total epochs recorded: {num_epochs}")
+            print(f"   Expected epochs: {self.args.epoch}")
+            print(f"   History keys: {list(history_dict.keys())}")
+            
+            if num_epochs < self.args.epoch:
+                print(f"⚠️ Warning: Training stopped at epoch {num_epochs}/{self.args.epoch}")
+                print("   This might be due to early stopping or an error during training")
+            
+            fold_metrics['acc'].extend(history_dict.get('accuracy', []))
+            fold_metrics['val_acc'].extend(history_dict.get('val_accuracy', []))
+            fold_metrics['loss'].extend(history_dict.get('loss', []))
+            fold_metrics['val_loss'].extend(history_dict.get('val_loss', []))
+        else:
+            # For LMMD, history is already a dict
+            num_epochs = len(history.get('accuracy', []))
+            print(f"\n📊 Fold {fold} History Information:")
+            print(f"   Total epochs recorded: {num_epochs}")
+            print(f"   Expected epochs: {self.args.epoch}")
+            print(f"   History keys: {list(history.keys())}")
+            
+            if num_epochs < self.args.epoch:
+                print(f"⚠️ Warning: Training stopped at epoch {num_epochs}/{self.args.epoch}")
+                print("   This might be due to early stopping or an error during training")
+            
+            fold_metrics['acc'].extend(history.get('accuracy', []))
+            fold_metrics['val_acc'].extend(history.get('val_accuracy', []))
+            fold_metrics['loss'].extend(history.get('loss', []))
+            fold_metrics['val_loss'].extend(history.get('val_loss', []))
+        
+        # Plot metrics for this fold
+        self._plot_fold_training_metrics(history, fold, save_dir)
+        
+        # Load best weights for this fold
+        self._load_weights(checkpoint_base)  # TensorFlow will automatically find the .index and .data files
+        
+        # Evaluate on validation set
+        val_loss, val_acc = self.model.evaluate(x_val, y_val, verbose=0)
+        y_pred = self.model.predict(x_val)
+            
+        print(f"Fold {fold} - Validation Accuracy: {val_acc:.4f}")
+        
+        # Store confusion matrix
+        y_pred_classes = np.argmax(y_pred, axis=1)
+        y_true_classes = np.argmax(y_val, axis=1)
+        cm = confusion_matrix(y_true_classes, y_pred_classes)
+        self.matrix.append(cm)
+        
+        # Update best fold if needed
+        if val_acc > self.best_fold_acc:
+            self.best_fold_acc = val_acc
+            self.best_fold_weight_path = checkpoint_base  # Store base path without extensions
+        
+        # Clean up memory after each fold to avoid memory leak
+        if not is_domain_adaptation:
+            print(f"\n🧹 Cleaning fold {fold} memory...")
+            # Only clear the session (not full reset to keep weights)
+            K.clear_session()
+            gc.collect()
+            # Recreate the session for the next fold
+            self.model = None
+        
+        return fold_metrics
 
-            # Store history for visualization
-            self.fold_histories.append(history.history)
-            fold_metrics.append({"fold": fold_idx, "history": history.history})
+    def train(self, x, y):
+        """Train the model using k-fold cross-validation"""
+        result = self._train_loop(x, y)
+        
+        # Clear TensorFlow session and force garbage collection to free memory
+        print("\n🧹 Cleaning up memory...")
+        tf.keras.backend.clear_session()
+        gc.collect()
+        
+        return result
 
-            # Plot training metrics for this fold
-            self._plot_fold_training_metrics(history.history, fold_idx, session_folder)
-
-            self.model.load_weights(weight_path)
-            loss, acc = self.model.evaluate(x[test_idx], y[test_idx], verbose=0)
-            avg_loss += loss
-            avg_acc += acc
-            print(f"✅ Fold {fold_idx} Accuracy: {round(acc * 100, 2)}%")
-
-            if acc > self.best_fold_acc:
-                self.best_fold_acc = acc
-                self.best_fold_weight_path = weight_path
-
-            y_pred = self.model.predict(x[test_idx])
-            self.matrix.append(confusion_matrix(np.argmax(y[test_idx], axis=1), np.argmax(y_pred, axis=1)))
-            eval_dict = classification_report(
-                np.argmax(y[test_idx], axis=1),
-                np.argmax(y_pred, axis=1),
-                target_names=self.class_labels,
-                output_dict=True,
-                zero_division=0,
+    def train_with_domain_adaptation(self, source_data, source_labels, target_data, target_labels=None):
+        """Train the model with domain adaptation using LMMD loss"""
+        if not self.use_lmmd:
+            print("⚠️ LMMD loss not enabled. Use --mode train-lmmd for domain adaptation.")
+            return self.train(source_data, source_labels)
+            
+        # Determine max sequence length
+        max_seq_len = max(source_data.shape[1], target_data.shape[1])
+        feature_dim = source_data.shape[2]
+        
+        # Pad or truncate sequences
+        if source_data.shape[1] < max_seq_len:
+            # Pad source data
+            pad_length = max_seq_len - source_data.shape[1]
+            source_data = np.pad(
+                source_data,
+                ((0, 0), (0, pad_length), (0, 0)),
+                mode='constant'
             )
-            self.eva_matrix.append(eval_dict)
-            print(
-                classification_report(
-                    np.argmax(y[test_idx], axis=1),
-                    np.argmax(y_pred, axis=1),
-                    target_names=self.class_labels,
-                    zero_division=0,
-                )
+        elif source_data.shape[1] > max_seq_len:
+            # Truncate source data
+            source_data = source_data[:, :max_seq_len, :]
+            
+        if target_data.shape[1] < max_seq_len:
+            # Pad target data
+            pad_length = max_seq_len - target_data.shape[1]
+            target_data = np.pad(
+                target_data,
+                ((0, 0), (0, pad_length), (0, 0)),
+                mode='constant'
             )
-
-        self.acc = avg_acc / self.args.split_fold
-        print(f"\n📊 Average Accuracy over {self.args.split_fold} folds: {round(self.acc * 100, 2)}%")
-
-        # Plot combined metrics across all folds
-        self._plot_combined_training_metrics(fold_metrics, session_folder)
-
-        # Save best weight to test_models
-        if self.best_fold_weight_path:
-            best_name = os.path.basename(self.best_fold_weight_path)
-
-            feature_subfolder = os.path.join("test_models", self.args.data, self.args.feature_type.upper())
-
-            # FIX: Remove any existing file with the same path before creating folder
-            if os.path.exists(feature_subfolder) and not os.path.isdir(feature_subfolder):
-                os.remove(feature_subfolder)
-
-            os.makedirs(feature_subfolder, exist_ok=True)
-
-            # Save the weight
-            shutil.copy(self.best_fold_weight_path, os.path.join(feature_subfolder, best_name))
-            print(f"🏆 Best fold model ({round(self.best_fold_acc * 100, 2)}%) saved to {feature_subfolder}/{best_name}")
+        elif target_data.shape[1] > max_seq_len:
+            # Truncate target data
+            target_data = target_data[:, :max_seq_len, :]
+            
+        # Update input shape for the model
+        self.input_shape = (max_seq_len, feature_dim)
+        print(f"Adjusted sequence length to {max_seq_len}")
+        print(f"Source data shape: {source_data.shape}")
+        print(f"Target data shape: {target_data.shape}")
+        
+        result = self._train_loop(source_data, source_labels, is_domain_adaptation=True, target_data=target_data)
+        
+        # Clear TensorFlow session and force garbage collection to free memory
+        print("\n🧹 Cleaning up memory...")
+        tf.keras.backend.clear_session()
+        gc.collect()
+        
+        return result
 
     def _plot_fold_training_metrics(self, history, fold_idx, save_dir):
         """Plot and save training metrics for a specific fold"""
-
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
-
+        
+        # Check if history is already a dict or has a history attribute
+        hist_dict = history if isinstance(history, dict) else history.history
+        
+        # Ensure we have all metrics
+        metrics = {
+            'accuracy': hist_dict.get('accuracy', []),
+            'val_accuracy': hist_dict.get('val_accuracy', []),
+            'loss': hist_dict.get('loss', []),
+            'val_loss': hist_dict.get('val_loss', [])
+        }
+        
+        # Create x-axis values based on the length of the metrics
+        epochs = range(1, len(metrics['accuracy']) + 1)
+        
+        # Print debug information
+        print(f"\n📊 Fold {fold_idx} Training Metrics:")
+        print(f"   Total epochs recorded: {len(epochs)}")
+        print(f"   Expected epochs: {self.args.epoch}")
+        
         # Plot accuracy
-        ax1.plot(history["accuracy"], label="Training Accuracy")
-        ax1.plot(history["val_accuracy"], label="Validation Accuracy")
-        ax1.set_title(f"Fold {fold_idx} - Model Accuracy")
-        ax1.set_ylabel("Accuracy")
-        ax1.set_xlabel("Epoch")
+        ax1.plot(epochs, metrics['accuracy'], label='Training')
+        ax1.plot(epochs, metrics['val_accuracy'], label='Validation')
+        ax1.set_title(f'Fold {fold_idx} - Model Accuracy')
+        ax1.set_ylabel('Accuracy')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylim([0, 1])
         ax1.legend()
-        ax1.grid(True, linestyle="--", alpha=0.6)
-
+        ax1.grid(True)
+        
         # Plot loss
-        ax2.plot(history["loss"], label="Training Loss")
-        ax2.plot(history["val_loss"], label="Validation Loss")
-        ax2.set_title(f"Fold {fold_idx} - Model Loss")
-        ax2.set_ylabel("Loss")
-        ax2.set_xlabel("Epoch")
+        ax2.plot(epochs, metrics['loss'], label='Training')
+        ax2.plot(epochs, metrics['val_loss'], label='Validation')
+        ax2.set_title(f'Fold {fold_idx} - Model Loss')
+        ax2.set_ylabel('Loss')
+        ax2.set_xlabel('Epoch')
         ax2.legend()
-        ax2.grid(True, linestyle="--", alpha=0.6)
-
+        ax2.grid(True)
+        
         plt.tight_layout()
-        metrics_file = os.path.join(save_dir, f"fold_{fold_idx}_metrics.png")
+        metrics_file = os.path.join(save_dir, f'fold_{fold_idx}_metrics.png')
         plt.savefig(metrics_file)
         plt.close()
-
+        
         print(f"📈 Fold {fold_idx} training metrics saved to: {metrics_file}")
 
     def _plot_combined_training_metrics(self, fold_metrics, save_dir):
         """Plot metrics combined from all folds"""
-
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
-
-        # Plot accuracy for all folds
-        for metrics in fold_metrics:
-            fold = metrics["fold"]
-            history = metrics["history"]
-            ax1.plot(history["val_accuracy"], label=f"Fold {fold}")
-
-        ax1.set_title("Validation Accuracy Across Folds")
-        ax1.set_ylabel("Accuracy")
-        ax1.set_xlabel("Epoch")
+        
+        # Print debug information
+        print("\n📊 Combined Training Metrics:")
+        print(f"   Total epochs recorded: {len(fold_metrics['acc'])}")
+        print(f"   Expected epochs per fold: {self.args.epoch}")
+        print(f"   Number of folds: {self.args.split_fold}")
+        print(f"   Expected total epochs: {self.args.epoch * self.args.split_fold}")
+        
+        # Plot accuracy
+        ax1.plot(fold_metrics['val_acc'], label='Validation')
+        ax1.plot(fold_metrics['acc'], label='Training')
+        ax1.set_title('Model Accuracy Across Folds')
+        ax1.set_ylabel('Accuracy')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylim([0, 1])
         ax1.legend()
-        ax1.grid(True, linestyle="--", alpha=0.6)
-
-        # Plot loss for all folds
-        for metrics in fold_metrics:
-            fold = metrics["fold"]
-            history = metrics["history"]
-            ax2.plot(history["val_loss"], label=f"Fold {fold}")
-
-        ax2.set_title("Validation Loss Across Folds")
-        ax2.set_ylabel("Loss")
-        ax2.set_xlabel("Epoch")
+        ax1.grid(True)
+        
+        # Plot loss
+        ax2.plot(fold_metrics['val_loss'], label='Validation')
+        ax2.plot(fold_metrics['loss'], label='Training')
+        ax2.set_title('Model Loss Across Folds')
+        ax2.set_ylabel('Loss')
+        ax2.set_xlabel('Epoch')
         ax2.legend()
-        ax2.grid(True, linestyle="--", alpha=0.6)
-
+        ax2.grid(True)
+        
         plt.tight_layout()
-        metrics_file = os.path.join(save_dir, f"all_folds_metrics.png")
+        metrics_file = os.path.join(save_dir, 'training_metrics.png')
         plt.savefig(metrics_file)
         plt.close()
+        
+        print(f"📊 Combined training metrics saved to: {metrics_file}")
 
-        print(f"📊 Combined metrics across all folds saved to: {metrics_file}")
-
-    def train_with_domain_adaptation(self, source_data, source_labels, target_data, target_labels=None):
-        """
-        Train the model with domain adaptation using LMMD loss
-
-        Args:
-            source_data: Source domain data (e.g., EMODB)
-            source_labels: Source domain labels
-            target_data: Target domain data (e.g., RAVDESS)
-            target_labels: Optional ground truth labels for the target domain
-        """
-        if not self.use_lmmd:
-            print("⚠️ LMMD loss not enabled. Use --use_lmmd flag for domain adaptation.")
-            return self.train(source_data, source_labels)
-
-        print(f"🚀 Starting domain adaptation training with LMMD loss...")
-        print(f"📊 Source domain: shape {source_data.shape}")
-        print(f"📊 Target domain: shape {target_data.shape}")
-
-        # Import LMMD loss
-        from .lmmd_loss import LMMDLoss, get_lmmd_loss
-
-        # Create the model
-        if self.model is None:
-            self.create_model()
-
-        # Make sure source labels are one-hot encoded
-        if len(source_labels.shape) == 1:
-            source_labels_onehot = to_categorical(source_labels, num_classes=self.num_classes)
+    def _evaluate_model(self, x, y, is_domain_adaptation=False, target_data=None):
+        """Helper method to evaluate model on given data"""
+        if is_domain_adaptation and target_data is not None:
+            loss, accuracy = self.model.evaluate([x, target_data], y, verbose=0)
+            y_pred = self.model.predict([x, target_data])
         else:
-            source_labels_onehot = source_labels
+            loss, accuracy = self.model.evaluate(x, y, verbose=0)
+            y_pred = self.model.predict(x)
+            
+        return loss, accuracy, y_pred
 
-        # Get initial pseudo-labels for target domain if no labels are provided
-        if target_labels is None:
-            # Use model to predict initial pseudo-labels
-            self.model.compile(
-                optimizer=Adam(
-                    learning_rate=self.args.lr,
-                    beta_1=self.args.beta1,
-                    beta_2=self.args.beta2,
-                ),
-                loss="categorical_crossentropy",
-                metrics=["accuracy"],
-            )
-
-            # Fit on source data first to get basic model
-            print("🔍 Pretraining on source domain for initial pseudo-labels...")
-            self.model.fit(
-                source_data,
-                source_labels_onehot,
-                batch_size=self.args.batch_size,
-                epochs=5,  # Just a few epochs for initialization
-                verbose=0,
-            )
-
-            # Generate pseudo-labels
-            target_preds = self.model.predict(target_data)
-            target_pseudo_labels = target_preds
-        else:
-            # Use provided target labels
-            if len(target_labels.shape) == 1:
-                target_pseudo_labels = to_categorical(target_labels, num_classes=self.num_classes)
-            else:
-                target_pseudo_labels = target_labels
-
-        # Prepare data for cross-validation
-        kf = KFold(
-            n_splits=self.args.split_fold,
-            shuffle=True,
-            random_state=self.args.random_seed,
+    def _generate_evaluation_metrics(self, y_true, y_pred, class_labels):
+        """Generate evaluation metrics including confusion matrix and classification report"""
+        y_pred_classes = np.argmax(y_pred, axis=1)
+        y_true_classes = np.argmax(y_true, axis=1)
+        
+        # Generate confusion matrix
+        cm = confusion_matrix(y_true_classes, y_pred_classes)
+        
+        # Generate classification report
+        report = classification_report(
+            y_true_classes, 
+            y_pred_classes,
+            target_names=class_labels,
+            digits=4
         )
-        fold = 1
+        
+        return cm, report
 
-        # Create model result directory
-        os.makedirs(self.result_dir, exist_ok=True)
-
-        # Cross-validation loop
-        acc_sum = 0
-
-        test_models_path = f"test_models/{self.args.data}/{self.args.feature_type}/"
-        os.makedirs(test_models_path, exist_ok=True)
-
-        for train_idx, val_idx in kf.split(source_data):
-            print(f"\n📂 Fold {fold}/{self.args.split_fold}")
-
-            # Split source data
-            x_train, x_val = source_data[train_idx], source_data[val_idx]
-            y_train, y_val = (
-                source_labels_onehot[train_idx],
-                source_labels_onehot[val_idx],
-            )
-
-            # Get validation indices for target domain (same proportion as source)
-            target_val_size = int(len(val_idx) / len(train_idx) * target_data.shape[0])
-            target_val_indices = np.random.choice(target_data.shape[0], target_val_size, replace=False)
-            target_train_indices = np.array([i for i in range(target_data.shape[0]) if i not in target_val_indices])
-
-            # Split target data
-            target_train = target_data[target_train_indices]
-            target_val = target_data[target_val_indices]
-            target_train_labels = target_pseudo_labels[target_train_indices]
-            target_val_labels = target_pseudo_labels[target_val_indices]
-
-            # Recreate model for this fold
-            tf.keras.backend.clear_session()
-            self.create_model()
-
-            # Create a custom training function using LMMD loss
-            print("🛠️ Building domain adaptation model...")
-
-            # Define a custom training step
-            @tf.function
-            def train_step(source_batch, source_labels_batch, target_batch, target_labels_batch):
-                with tf.GradientTape() as tape:
-                    # Get source predictions
-                    source_preds = self.model(source_batch, training=True)
-
-                    # Get target predictions
-                    target_preds = self.model(target_batch, training=True)
-
-                    # Extract features from the layer before final dense layer
-                    source_features_model = tf.keras.Model(inputs=self.model.input, outputs=self.model.layers[-2].output)
-                    target_features_model = tf.keras.Model(inputs=self.model.input, outputs=self.model.layers[-2].output)
-
-                    source_features = source_features_model(source_batch, training=True)
-                    target_features = target_features_model(target_batch, training=True)
-
-                    # Calculate classification loss
-                    class_loss = tf.keras.losses.categorical_crossentropy(source_labels_batch, source_preds)
-
-                    # Calculate LMMD loss
-                    lmmd = self.lmmd_loss.get_lmmd_loss_fn()(
-                        source_labels_batch,
-                        source_preds,
-                        source_features,
-                        target_features,
-                        source_labels_batch,
-                        target_labels_batch,
-                    )
-
-                    # Calculate total loss
-                    total_loss = tf.reduce_mean(class_loss) + lmmd
-
-                # Compute gradients
-                gradients = tape.gradient(total_loss, self.model.trainable_variables)
-
-                # Update weights
-                optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-
-                return total_loss, tf.reduce_mean(class_loss), lmmd
-
-            # Create optimizer
-            optimizer = Adam(
-                learning_rate=self.args.lr,
-                beta_1=self.args.beta1,
-                beta_2=self.args.beta2,
-            )
-
-            # Compile the model for evaluation metrics
-            self.model.compile(
-                optimizer=optimizer,
-                loss="categorical_crossentropy",
-                metrics=["accuracy"],
-            )
-
-            # Setup callbacks
-            weight_path = os.path.join(
-                test_models_path,
-                f"{self.args.split_fold}-fold_weights_{fold}.weights.h5",
-            )
-            best_weight_path = os.path.join(
-                test_models_path,
-                f"{self.args.split_fold}-fold_weights_best_{fold}.weights.h5",
-            )
-
-            checkpoint = callbacks.ModelCheckpoint(
-                weight_path,
-                monitor="val_accuracy",
-                verbose=0,
-                save_best_only=False,
-                save_weights_only=True,
-                mode="max",
-            )
-
-            best_checkpoint = callbacks.ModelCheckpoint(
-                best_weight_path,
-                monitor="val_accuracy",
-                verbose=0,
-                save_best_only=True,
-                save_weights_only=True,
-                mode="max",
-            )
-
-            early_stopping = callbacks.EarlyStopping(monitor="val_accuracy", patience=30, restore_best_weights=True)
-
-            # Train the model with domain adaptation
-            print(f"🚂 Training with domain adaptation...")
-
-            # Number of batches
-            batch_size = self.args.batch_size
-            steps_per_epoch = len(x_train) // batch_size
-
-            # Training loop
-            best_val_acc = 0
-            patience_counter = 0
-            max_patience = 30
-
-            for epoch in range(self.args.epoch):
-                # Shuffle indices
-                source_indices = np.random.permutation(len(x_train))
-                target_indices = np.random.permutation(len(target_train))
-
-                epoch_loss = 0
-                epoch_class_loss = 0
-                epoch_lmmd_loss = 0
-
-                # Process batches
-                for batch in range(steps_per_epoch):
-                    start_idx = batch * batch_size
-                    end_idx = min(start_idx + batch_size, len(x_train))
-
-                    # Get source batch
-                    source_batch_indices = source_indices[start_idx:end_idx]
-                    source_batch = x_train[source_batch_indices]
-                    source_batch_labels = y_train[source_batch_indices]
-
-                    # Get target batch (cyclically if needed)
-                    target_batch_indices = target_indices[(start_idx % len(target_train)) : ((start_idx % len(target_train)) + batch_size)]
-                    if len(target_batch_indices) < batch_size:
-                        target_batch_indices = np.concatenate(
-                            [
-                                target_batch_indices,
-                                target_indices[: (batch_size - len(target_batch_indices))],
-                            ]
-                        )
-
-                    target_batch = target_train[target_batch_indices]
-                    target_batch_labels = target_train_labels[target_batch_indices]
-
-                    # Train on this batch
-                    batch_loss, batch_class_loss, batch_lmmd_loss = train_step(
-                        source_batch,
-                        source_batch_labels,
-                        target_batch,
-                        target_batch_labels,
-                    )
-
-                    epoch_loss += batch_loss / steps_per_epoch
-                    epoch_class_loss += batch_class_loss / steps_per_epoch
-                    epoch_lmmd_loss += batch_lmmd_loss / steps_per_epoch
-
-                # Evaluate on validation set
-                val_results = self.model.evaluate(x_val, y_val, verbose=0)
-                val_loss, val_acc = val_results
-
-                # Update best accuracy
-                if val_acc > best_val_acc:
-                    best_val_acc = val_acc
-                    patience_counter = 0
-                    # Save best weights
-                    self.model.save_weights(best_weight_path)
-                else:
-                    patience_counter += 1
-
-                # Print progress
-                print(
-                    f"Epoch {epoch+1}/{self.args.epoch} - Loss: {epoch_loss:.4f} (Class: {epoch_class_loss:.4f}, LMMD: {epoch_lmmd_loss:.4f}) - Val_acc: {val_acc:.4f}"
-                )
-
-                # Update pseudo-labels for target domain every 10 epochs
-                if (epoch + 1) % 10 == 0:
-                    target_preds = self.model.predict(target_train)
-                    target_train_labels = target_preds
-
-                # Early stopping
-                if patience_counter >= max_patience:
-                    print(f"⏱️ Early stopping at epoch {epoch+1}")
-                    break
-
-            # Load best weights
-            self.model.load_weights(best_weight_path)
-
-            # Evaluate on validation set
-            val_results = self.model.evaluate(x_val, y_val, verbose=0)
-            val_loss, val_acc = val_results
-
-            print(f"📊 Fold {fold} validation accuracy: {val_acc:.4f}")
-            acc_sum += val_acc
-
-            # Save confusion matrix
-            y_pred = np.argmax(self.model.predict(x_val), axis=1)
-            y_true = np.argmax(y_val, axis=1)
-            cm = confusion_matrix(y_true, y_pred)
-            self.matrix.append(cm)
-
-            if val_acc > self.best_fold_acc:
-                self.best_fold_acc = val_acc
-                self.best_fold_weight_path = best_weight_path
-
-            fold += 1
-
-        # Calculate average accuracy
-        acc_avg = acc_sum / self.args.split_fold
-        print(f"\n📊 Average validation accuracy: {acc_avg:.4f}")
-        print(f"🥇 Best fold accuracy: {self.best_fold_acc:.4f}")
-        print(f"💾 Best weights saved to: {self.best_fold_weight_path}")
-
-        # Load best weights for inference
-        self.model.load_weights(self.best_fold_weight_path)
-        self.trained = True
-        self.acc = acc_avg
-
-        return self.acc
+    def _save_evaluation_results(self, cm, report, result_dir, result_filename):
+        """Save evaluation results to files"""
+        # Create result directory if it doesn't exist
+        os.makedirs(result_dir, exist_ok=True)
+        
+        # Save confusion matrix plot
+        plt.figure(figsize=(10, 8))
+        plt.imshow(cm, interpolation='nearest', cmap='Blues')
+        plt.colorbar()
+        plt.title('Confusion Matrix')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.savefig(os.path.join(result_dir, f"{result_filename}_confusion_matrix.png"))
+        plt.close()
+        
+        # Save classification report
+        with open(os.path.join(result_dir, f"{result_filename}_classification_report.txt"), 'w') as f:
+            f.write(report)
+            
+        print(f"📊 Evaluation results saved to: {result_dir}")
 
     def evaluate_test(self, x_test, y_test, path=None, result_filename=None, result_dir=None):
-        """
-        Evaluate model on test data.
-
-        Args:
-            x_test: Test features
-            y_test: Test labels (one-hot encoded)
-            path: Path to model weights
-            result_filename: Custom filename for results (used in cross-corpus validation)
-            result_dir: Custom directory for saving results (used in cross-corpus validation)
-        """
-        if not path:
-            print("❌ No model weights path provided!")
-            return
-
-        print(f"📋 Loading model weights from: {path}")
-        self._load_weights(path)
-
-        y_pred = self.model.predict(x_test)
-
-        # Convert one-hot encoded to class indices
-        y_true = np.argmax(y_test, axis=1)
-        y_pred = np.argmax(y_pred, axis=1)
-
-        # Generate evaluation matrix
-        cm = confusion_matrix(y_true, y_pred)
-
-        # Check for class mismatch and handle it
-        unique_classes = np.unique(np.concatenate([y_true, y_pred]))
-        num_unique_classes = len(unique_classes)
-
-        if num_unique_classes != len(self.class_labels):
-            print(f"⚠️ Class mismatch: {num_unique_classes} classes detected, but {len(self.class_labels)} class labels provided")
-            # Use a subset of labels or generate generic labels
-            if num_unique_classes < len(self.class_labels):
-                # Find which classes are actually present in the data
-                present_classes = sorted(unique_classes)
-                present_labels = [self.class_labels[i] for i in present_classes if i < len(self.class_labels)]
-
-                # Fill in any missing labels with generic names
-                if len(present_labels) < num_unique_classes:
-                    present_labels = [f"Class {i}" for i in range(num_unique_classes)]
-
-                print(f"🔄 Using subset of labels: {present_labels}")
-                cr = classification_report(
-                    y_true,
-                    y_pred,
-                    labels=range(num_unique_classes),
-                    target_names=present_labels,
-                    output_dict=True,
+        """Evaluate model on test data and generate metrics"""
+        # Ensure model exists
+        if self.model is None:
+            print("\n🔄 Creating model architecture...")
+            self.create_model()
+            
+        # Load weights if path is provided
+        if path:
+            self._load_weights(path)
+            
+        print("\n🔍 Validating test data:")
+        print(f"Input shape: {x_test.shape}")
+        print(f"Label shape: {y_test.shape}")
+        
+        # Validate input data
+        if len(x_test.shape) != 3:
+            raise ValueError(f"Expected 3D input (batch_size, time_steps, features), got shape {x_test.shape}")
+            
+        # Validate label shape
+        if len(y_test.shape) != 2:
+            raise ValueError(f"Expected 2D labels (batch_size, num_classes), got shape {y_test.shape}")
+            
+        # Validate number of classes
+        if y_test.shape[1] != len(self.class_labels):
+            raise ValueError(f"Expected {len(self.class_labels)} classes in labels, got {y_test.shape[1]}")
+            
+        # Validate feature dimension
+        if x_test.shape[2] != self.input_shape[1]:
+            raise ValueError(f"Feature dimension mismatch: expected {self.input_shape[1]}, got {x_test.shape[2]}")
+            
+        # Validate matching number of samples
+        if x_test.shape[0] != y_test.shape[0]:
+            raise ValueError(f"Number of samples mismatch: {x_test.shape[0]} inputs vs {y_test.shape[0]} labels")
+            
+        # Handle sequence length mismatch
+        if x_test.shape[1] != self.input_shape[0]:
+            print(f"\n⚠️ Sequence length mismatch:")
+            print(f"   Expected: {self.input_shape[0]}")
+            print(f"   Got: {x_test.shape[1]}")
+            print("   Adjusting sequence length...")
+            
+            if x_test.shape[1] < self.input_shape[0]:
+                # Pad
+                pad_length = self.input_shape[0] - x_test.shape[1]
+                x_test = np.pad(
+                    x_test,
+                    ((0, 0), (0, pad_length), (0, 0)),
+                    mode='constant'
                 )
-                cr_str = classification_report(
-                    y_true,
-                    y_pred,
-                    labels=range(num_unique_classes),
-                    target_names=present_labels,
-                )
-                used_labels = present_labels
+                print(f"   Padded to length: {x_test.shape[1]}")
             else:
-                # Generate generic labels if we have more classes than labels
-                generic_labels = [f"Class {i}" for i in range(num_unique_classes)]
-                print(f"🔄 Using generic labels: {generic_labels}")
-                cr = classification_report(
-                    y_true,
-                    y_pred,
-                    labels=range(num_unique_classes),
-                    target_names=generic_labels,
-                    output_dict=True,
-                )
-                cr_str = classification_report(
-                    y_true,
-                    y_pred,
-                    labels=range(num_unique_classes),
-                    target_names=generic_labels,
-                )
-                used_labels = generic_labels
-        else:
-            cr = classification_report(y_true, y_pred, target_names=self.class_labels, output_dict=True)
-            cr_str = classification_report(y_true, y_pred, target_names=self.class_labels)
-            used_labels = self.class_labels
-
-        accuracy = np.sum(np.diag(cm)) / np.sum(cm)
-
-        # Print results
-        print(f"\n📊 Test Accuracy: {accuracy:.4f}\n")
-        print("📝 Classification Report:")
-        print(cr_str)
-        print("\n🧮 Confusion Matrix:")
-        print(cm)
-
-        # Override result_dir if provided (for cross-corpus validation)
-        if result_dir:
-            self.result_dir = result_dir
-
-        # Create result directory if it doesn't exist
-        if not self.result_dir:
-            self.result_dir = os.path.join(self.args.result_path, self.args.data)
-        os.makedirs(self.result_dir, exist_ok=True)
-
-        # Use custom filename if provided, otherwise use timestamp
-        if result_filename:
-            filename = f"{result_filename}.xlsx"
-            viz_filename = f"{result_filename}_viz"
-        else:
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            filename = f"evaluation_{timestamp}.xlsx"
-            viz_filename = f"evaluation_{timestamp}_viz"
-
-        excel_path = os.path.join(self.result_dir, filename)
-
-        # Generate and save visualizations
-        self._visualize_test_results(
-            x_test,
-            y_true,
-            y_pred,
+                # Truncate
+                x_test = x_test[:, :self.input_shape[0], :]
+                print(f"   Truncated to length: {x_test.shape[1]}")
+            
+        print(f"\n✅ Validation complete:")
+        print(f"   Final input shape: {x_test.shape}")
+        print(f"   Label shape: {y_test.shape}")
+        print(f"   Number of classes: {len(self.class_labels)}")
+        
+        # Set default result filename using consistent naming
+        if result_filename is None:
+            result_filename = f"{self.args.data}_{self.args.feature_type.upper()}_{self.now}_test"
+            
+        # Use base results directory unless custom one provided (e.g., for cross-corpus)
+        eval_dir = result_dir if result_dir else self.base_results
+        
+        # Ensure evaluation directory exists
+        os.makedirs(eval_dir, exist_ok=True)
+        
+        # Evaluate model
+        loss, accuracy, y_pred = self._evaluate_model(x_test, y_test)
+        print(f"\n📊 Test Results:")
+        print(f"   Loss: {loss:.4f}")
+        print(f"   Accuracy: {accuracy:.4f}")
+        
+        # Generate and save metrics
+        cm, report = self._generate_evaluation_metrics(y_test, y_pred, self.class_labels)
+        
+        # Save results
+        results_base = os.path.join(eval_dir, result_filename)
+        
+        # Save confusion matrix visualization
+        plt.figure(figsize=(12, 9))
+        plt.imshow(cm, interpolation='nearest', cmap='Blues')
+        plt.colorbar()
+        plt.title(f'Confusion Matrix\nAccuracy: {accuracy:.4f}')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.tight_layout()
+        plt.savefig(f"{results_base}_confusion_matrix.png")
+        plt.close()
+        
+        # Save classification report
+        with open(f"{results_base}_classification_report.txt", 'w') as f:
+            f.write(report)
+        
+        # Save detailed results to Excel
+        self._save_results_to_excel(
+            f"{results_base}_results.xlsx",
             cm,
-            cr,
-            used_labels,
-            os.path.join(self.result_dir, viz_filename),
+            report,
+            accuracy,
+            self.class_labels
         )
-
-        self._save_results_to_excel(excel_path, cm, cr_str, accuracy, used_labels)
-        print(f"✅ Results saved to: {excel_path}")
+        
+        print(f"\n💾 Results saved to:")
+        print(f"   {results_base}_confusion_matrix.png")
+        print(f"   {results_base}_classification_report.txt")
+        print(f"   {results_base}_results.xlsx")
+        
+        # Clear memory before returning
+        print("\n🧹 Cleaning up memory...")
+        tf.keras.backend.clear_session()
+        gc.collect()
+        
         return y_pred, accuracy
 
-    def _visualize_test_results(self, x_test, y_true, y_pred, cm, cr, class_labels, output_prefix):
-        """Create and save detailed visualizations of test results"""
-
-        # 1. Normalized confusion matrix visualization
-        plt.figure(figsize=(10, 8))
-        cm_norm = cm.astype("float") / cm.sum(axis=1)[:, np.newaxis]
-        sns.heatmap(
-            cm_norm,
-            annot=True,
-            fmt=".2f",
-            cmap="Blues",
-            xticklabels=class_labels,
-            yticklabels=class_labels,
-        )
-        plt.title(f'Normalized Confusion Matrix\nAccuracy: {cr["accuracy"]:.4f}')
-        plt.xlabel("Predicted")
-        plt.ylabel("True")
-        plt.tight_layout()
-        plt.savefig(f"{output_prefix}_confusion_matrix.png")
-        plt.close()
-
-        # 2. Per-class metrics visualization
-        plt.figure(figsize=(12, 8))
-        class_metrics = []
-        class_names = []
-
-        for label in class_labels:
-            if label in cr:
-                class_metrics.append([cr[label]["precision"], cr[label]["recall"], cr[label]["f1-score"]])
-                class_names.append(label)
-
-        class_metrics = np.array(class_metrics)
-
-        x = np.arange(len(class_names))
-        width = 0.25
-
-        fig, ax = plt.subplots(figsize=(14, 8))
-        rects1 = ax.bar(x - width, class_metrics[:, 0], width, label="Precision")
-        rects2 = ax.bar(x, class_metrics[:, 1], width, label="Recall")
-        rects3 = ax.bar(x + width, class_metrics[:, 2], width, label="F1-score")
-
-        ax.set_ylabel("Score")
-        ax.set_title("Per-class Performance Metrics")
-        ax.set_xticks(x)
-        ax.set_xticklabels(class_names, rotation=45, ha="right")
-        ax.legend()
-        ax.grid(True, linestyle="--", alpha=0.6)
-
-        # Add value labels on bars
-        def autolabel(rects):
-            for rect in rects:
-                height = rect.get_height()
-                ax.annotate(
-                    f"{height:.2f}",
-                    xy=(rect.get_x() + rect.get_width() / 2, height),
-                    xytext=(0, 3),
-                    textcoords="offset points",
-                    ha="center",
-                    va="bottom",
-                )
-
-        autolabel(rects1)
-        autolabel(rects2)
-        autolabel(rects3)
-
-        plt.tight_layout()
-        plt.savefig(f"{output_prefix}_class_metrics.png")
-        plt.close()
-
-        # 3. ROC curve for each class (if probabilities are available)
-        try:
-            # For this we would need the actual probability predictions
-            # Get fresh predictions to get probabilities
-            y_pred_proba = self.model.predict(x_test)
-
-            # Plot ROC curve for each class
-            plt.figure(figsize=(12, 10))
-
-            for i, label in enumerate(class_labels):
-                if i < y_pred_proba.shape[1]:  # Make sure we have probability for this class
-                    fpr, tpr, _ = roc_curve((y_true == i).astype(int), y_pred_proba[:, i])
-                    roc_auc = auc(fpr, tpr)
-                    plt.plot(fpr, tpr, lw=2, label=f"{label} (AUC = {roc_auc:.2f})")
-
-            plt.plot([0, 1], [0, 1], "k--", lw=2)
-            plt.xlim([0.0, 1.0])
-            plt.ylim([0.0, 1.05])
-            plt.xlabel("False Positive Rate")
-            plt.ylabel("True Positive Rate")
-            plt.title("ROC Curves per Class")
-            plt.legend(loc="lower right")
-            plt.grid(True, linestyle="--", alpha=0.6)
-            plt.savefig(f"{output_prefix}_roc_curve.png")
-            plt.close()
-        except Exception as e:
-            print(f"Note: Could not generate ROC curve: {e}")
-
-        print(f"📊 Visualizations saved with prefix: {output_prefix}")
-
     def _load_weights(self, path):
-        """Helper method to load weights from path"""
-        # Check if path is a directory or a file
-        if os.path.isdir(path):
-            print(f"📂 Searching for model weights in directory: {path}")
-            weight_files = [f for f in os.listdir(path) if f.endswith(".h5")]
-
-            if not weight_files:
-                raise ValueError(f"No weight files found in {path}")
-
-            # Sort by creation time (most recent first)
-            weight_files.sort(key=lambda x: os.path.getmtime(os.path.join(path, x)), reverse=True)
-
-            # Prefer files with "best" in the name
-            best_files = [f for f in weight_files if "best" in f.lower()]
-            if best_files:
-                weight_file = os.path.join(path, best_files[0])
-                print(f"✅ Found best model: {best_files[0]}")
-            else:
-                weight_file = os.path.join(path, weight_files[0])
-                print(f"✅ Using most recent model: {weight_files[0]}")
-        else:
-            weight_file = path
-
-        print(f"📂 Loading weights from: {weight_file}")
-
-        # Just create the model architecture with the current number of classes
-        self.create_model()
-
-        # If this is a weights-only file (most likely case)
-        if "weights" in os.path.basename(weight_file).lower():
-            try:
-                # First try to load directly with skip_mismatch=True
-                print("🔍 Attempting to load weights with skip_mismatch=True")
-                self.model.load_weights(weight_file, skip_mismatch=True)
-                print("✅ Successfully loaded compatible weights")
-                return
-            except Exception as e:
-                print(f"⚠️ Error with skip_mismatch approach: {e}")
-                print("🔄 Trying manual layer-by-layer loading...")
-
-                try:
-                    # Try to load weights one layer at a time, skipping problematic layers
-                    import h5py
-
-                    f = h5py.File(weight_file, "r")
-
-                    # Get layer names from the file
-                    if "layer_names" in f.attrs:
-                        layer_names = [n.decode("utf8") for n in f.attrs["layer_names"]]
-                        print(f"📄 Found {len(layer_names)} layers in weights file")
-
-                        # For each layer in the model, try to load weights if name matches
-                        for layer in self.model.layers:
-                            if layer.name in layer_names and "dense" not in layer.name:
-                                # Get weight names for this layer
-                                g = f[layer.name]
-                                weight_names = [n.decode("utf8") for n in g.attrs["weight_names"]]
-
-                                # Load weights for this layer
-                                weight_values = [np.array(g[weight_name]) for weight_name in weight_names]
-                                try:
-                                    layer.set_weights(weight_values)
-                                    print(f"✓ Loaded weights for layer: {layer.name}")
-                                except Exception as layer_error:
-                                    print(f"⚠️ Could not load weights for layer {layer.name}: {layer_error}")
-
-                        print("✅ Successfully loaded compatible layer weights")
-                        return
-                    else:
-                        print("⚠️ No layer_names attribute found in weights file")
-                except Exception as h5_error:
-                    print(f"⚠️ Failed to load with h5py: {h5_error}")
-
-                # Try numpy approach if h5py failed
-                try:
-                    print("🔄 Trying NumPy approach...")
-                    weights_data = np.load(weight_file, allow_pickle=True)
-                    if isinstance(weights_data, np.ndarray):
-                        weights_data = weights_data.item()
-
-                        # Find layers that don't have 'dense' in their name
-                        layer_names = [name for name in weights_data.keys() if "dense" not in name]
-                        print(f"📄 Found {len(layer_names)} non-dense layers in weights file")
-
-                        # Load weights for non-dense layers
-                        for layer in self.model.layers:
-                            if layer.name in layer_names:
-                                try:
-                                    # Get weight values for this layer
-                                    if layer.name in weights_data:
-                                        if isinstance(weights_data[layer.name], dict):
-                                            # Extract weight values from dictionary
-                                            weight_values = [weights_data[layer.name][key] for key in weights_data[layer.name].keys()]
-                                        else:
-                                            # Weights are directly stored
-                                            weight_values = weights_data[layer.name]
-
-                                        layer.set_weights(weight_values)
-                                        print(f"✓ Loaded weights for layer: {layer.name}")
-                                except Exception as layer_error:
-                                    print(f"⚠️ Could not load weights for layer {layer.name}: {layer_error}")
-
-                        print("✅ Successfully loaded compatible layer weights (skipping dense layers)")
-                        return
-                except Exception as np_error:
-                    print(f"⚠️ Failed to load with NumPy: {np_error}")
-
-        # As a last resort, try to load the model directly
+        """Load model weights from the specified path"""
+        # Ensure model exists
+        if self.model is None:
+            print("\n🔄 Creating model architecture...")
+            self.create_model()
+            
         try:
-            print("🔍 Attempting to load or recreate model")
-
-            try:
-                # Try to load the model directly
-                loaded_model = tf.keras.models.load_model(weight_file)
-
-                # If successful, transfer weights from all but the last layer
-                for i, layer in enumerate(self.model.layers[:-1]):
-                    if i < len(loaded_model.layers) - 1:
-                        layer.set_weights(loaded_model.layers[i].get_weights())
-
-                print("✅ Successfully transferred weights from compatible layers")
-                return
-            except Exception as e:
-                print(f"⚠️ Error loading complete model: {e}")
-                # If all approaches fail, create a simple model
-                print("⚠️ Could not load weights. Using initialized model.")
-
+            print(f"📋 Loading model weights from: {path}")
+            # Check if path is a directory
+            if os.path.isdir(path):
+                # Find the most recent weight file
+                weight_files = [f for f in os.listdir(path) if f.endswith('.index')]
+                if not weight_files:
+                    raise ValueError(f"No weight files found in {path}")
+                
+                # Sort by creation time (most recent first)
+                weight_files.sort(key=lambda x: os.path.getmtime(os.path.join(path, x)), reverse=True)
+                
+                # Get base name without .index extension
+                latest_weights = os.path.join(path, weight_files[0][:-6])  # Remove .index
+                print(f"✅ Found latest weights: {latest_weights}")
+                self.model.load_weights(latest_weights)
+            else:
+                # Direct path to weights (TensorFlow will automatically handle extensions)
+                self.model.load_weights(path)
+            print("✅ Model weights loaded successfully")
         except Exception as e:
-            print(f"❌ All loading approaches failed!")
-            print(f"❌ Last error: {e}")
-            raise ValueError(f"Could not load model weights after multiple attempts. Try training the model first.")
+            print(f"❌ Error loading model weights: {e}")
+            raise
+
+    def load_weights(self, path):
+        """Public method to load model weights"""
+        self._load_weights(path)
+
+    def save_weights(self, path):
+        """Save model weights to the specified path"""
+        try:
+            print(f"💾 Saving model weights to: {path}")
+            # TensorFlow will automatically add .index and .data-* extensions
+            self.model.save_weights(path, save_format="tf")
+            print("✅ Model weights saved successfully")
+        except Exception as e:
+            print(f"❌ Error saving model weights: {e}")
+            raise
 
     def _save_results_to_excel(self, excel_path, confusion_matrix, classification_report, accuracy, used_labels):
         """Save evaluation results to Excel file"""

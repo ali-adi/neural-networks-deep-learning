@@ -16,9 +16,6 @@ env/
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
 
-# Data files (if large and not to be tracked)
-data/
-
 # Logs and temporary files
 *.log
 *.tmp

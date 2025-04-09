@@ -1,0 +1,2 @@
+model_checkpoint_path: "10-fold_weights_best_10"
+all_model_checkpoint_paths: "10-fold_weights_best_10"

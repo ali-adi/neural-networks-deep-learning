@@ -61,6 +61,11 @@ import argparse
 import datetime
 import os
 import shutil
+import sys
+import json
+import gc
+import time
+import threading
 
 import numpy as np
 from sklearn.metrics import classification_report, confusion_matrix
@@ -73,36 +78,202 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import tensorflow as tf
+from tensorflow.keras.utils import to_categorical
 
-# Enable Metal for Apple Silicon or CUDA for NVIDIA GPUs
-if tf.test.is_built_with_cuda():
-    os.environ["DEVICE"] = "cuda"
-else:
-    os.environ["DEVICE"] = "metal"
+# Function to monitor GPU memory usage
+def monitor_gpu_memory():
+    """Thread function to periodically check and report GPU memory usage"""
+    if tf.test.is_built_with_cuda():
+        # Set memory limit to 64GB (in bytes)
+        memory_limit_gb = 64
+        memory_limit_bytes = memory_limit_gb * 1024 * 1024 * 1024
+        
+        while True:
+            try:
+                # Print current memory usage
+                try:
+                    # Get memory usage using TensorFlow
+                    devices = tf.config.list_physical_devices('GPU')
+                    if devices:
+                        # Try different methods to get memory info
+                        memory_info = None
+                        
+                        # Method 1: Using experimental.get_memory_info
+                        try:
+                            memory_info = tf.config.experimental.get_memory_info('GPU:0')
+                        except:
+                            pass
+                            
+                        # Method 2: Using tf.config.experimental.get_memory_growth
+                        if not memory_info:
+                            try:
+                                # Create a small tensor to force memory allocation
+                                with tf.device('/GPU:0'):
+                                    test_tensor = tf.zeros((1000, 1000))
+                                    memory_info = tf.config.experimental.get_memory_info('GPU:0')
+                            except:
+                                pass
+                                
+                        # Method 3: Using nvidia-smi via subprocess
+                        if not memory_info:
+                            try:
+                                import subprocess
+                                result = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,nounits,noheader'])
+                                used_mb, total_mb = map(int, result.decode('utf-8').strip().split(','))
+                                print(f"\n💾 GPU Memory Usage: {used_mb} MB / {total_mb} MB ({used_mb/total_mb*100:.1f}%)")
+                                
+                                # Check if memory usage exceeds the limit
+                                if used_mb * 1024 * 1024 > memory_limit_bytes:
+                                    print(f"⚠️ WARNING: Memory usage exceeds {memory_limit_gb}GB limit!")
+                                    print(f"   Consider reducing batch size or model complexity")
+                            except:
+                                pass
+                                
+                        # If we got memory info from TensorFlow, use it
+                        if memory_info:
+                            used_mb = memory_info.get('current', 0) / (1024 * 1024)
+                            used_gb = used_mb / 1024
+                            print(f"\n💾 GPU Memory Usage: {used_mb:.2f} MB ({used_gb:.2f} GB)")
+                            
+                            # Check if memory usage exceeds the limit
+                            if memory_info.get('current', 0) > memory_limit_bytes:
+                                print(f"⚠️ WARNING: Memory usage exceeds {memory_limit_gb}GB limit!")
+                                print(f"   Consider reducing batch size or model complexity")
+                except Exception as e:
+                    print(f"\n⚠️ Could not get GPU memory info: {e}")
+                
+                time.sleep(30)  # Check every 30 seconds
+            except Exception as e:
+                print(f"Error in GPU monitor: {e}")
+                break
+            except KeyboardInterrupt:
+                break
 
 print("\n🖥️  Device Configuration:")
 
-# Try to enable GPU (either Metal or CUDA)
+# Try a more direct approach to detect NVIDIA GPUs
+nvidia_gpu_available = False
 try:
-    # List available devices
-    physical_devices = tf.config.list_physical_devices()
-    print("   Available physical devices:", [device.name for device in physical_devices])
-
-    # Try to create a simple operation on GPU
-    with tf.device("/device:GPU:0"):
-        # Test if GPU is working
-        test_tensor = tf.zeros((1, 1))
-        if tf.test.is_built_with_cuda():
-            print("   ✅ CUDA GPU is available and configured")
-            print("   🚀 Using CUDA GPU for computation")
-        else:
-            print("   ✅ Metal GPU is available and configured")
-            print("   📱 Using Metal GPU for computation")
+    import subprocess
+    result = subprocess.run(['nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode == 0:
+        nvidia_gpu_output = result.stdout.decode('utf-8')
+        print(f"   ✅ NVIDIA GPU detected via nvidia-smi")
+        print(f"   GPU info: {nvidia_gpu_output.split('|')[0].strip().split('GPU')[0].strip()}")
+        nvidia_gpu_available = True
+    else:
+        print(f"   ❌ nvidia-smi command failed: {result.stderr.decode('utf-8')}")
 except Exception as e:
-    print(f"   ⚠️ Could not configure GPU: {e}")
-    print("   ℹ️ Falling back to CPU")
+    print(f"   ❌ Error checking for NVIDIA GPU: {e}")
 
-from tensorflow.keras.utils import to_categorical
+# Check for CUDA availability
+cuda_available = tf.test.is_built_with_cuda()
+print(f"   CUDA built with TensorFlow: {cuda_available}")
+
+# Force TensorFlow to see CUDA device if available
+if nvidia_gpu_available and cuda_available:
+    # Set visible devices explicitly
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    print(f"   ✅ Set CUDA_VISIBLE_DEVICES=0 to force GPU visibility")
+    
+    # Try to force-enable GPU in TensorFlow
+    physical_devices = tf.config.list_physical_devices()
+    print("   Available physical devices before configuration:", [device.name for device in physical_devices])
+    
+    # Try alternate ways to get GPU devices
+    try:
+        # Try with experimental.get_visible_devices()
+        visible_devices = tf.config.experimental.get_visible_devices()
+        print("   Visible devices:", [device.name for device in visible_devices])
+        
+        # Try listing CUDA devices directly
+        cuda_devices = tf.config.experimental.list_physical_devices('GPU')
+        if cuda_devices:
+            print(f"   Found {len(cuda_devices)} CUDA device(s) with experimental API")
+        
+        # Force device visibility if needed
+        if not cuda_devices:
+            print("   Attempting to force GPU visibility...")
+            # Create a dummy CUDA session to initialize GPU
+            import os
+            os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+            
+            # Try to create a simple CUDA operation
+            with tf.device('/device:GPU:0'):
+                a = tf.constant([[1.0, 2.0], [3.0, 4.0]])
+                b = tf.constant([[1.0, 1.0], [0.0, 1.0]])
+                c = tf.matmul(a, b)
+                print(f"   Test CUDA operation result: {c}")
+                print("   ✅ Successfully executed operation on CUDA GPU")
+    except Exception as e:
+        print(f"   ⚠️ Error during advanced GPU detection: {e}")
+
+# List physical devices after configuration attempts
+physical_devices = tf.config.list_physical_devices()
+print("   Available physical devices after configuration:", [device.name for device in physical_devices])
+
+# Configure GPU if found
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    print(f"   Found {len(gpus)} GPU(s): {[gpu.name for gpu in gpus]}")
+    
+    # Set memory growth to avoid allocating all memory at once
+    for gpu in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"   ✅ Memory growth enabled for {gpu.name}")
+        except RuntimeError as e:
+            print(f"   ⚠️ Could not set memory growth for {gpu.name}: {e}")
+    
+    # Set memory limit to 64GB
+    try:
+        tf.config.set_logical_device_configuration(
+            gpus[0],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=64 * 1024)]  # 64GB in MB
+        )
+        print(f"   ✅ Memory limit set to 64GB for {gpus[0].name}")
+    except RuntimeError as e:
+        print(f"   ⚠️ Could not set memory limit: {e}")
+    
+    # Determine which GPU backend to use
+    if cuda_available:
+        os.environ["DEVICE"] = "cuda"
+        print("   ✅ Using CUDA GPU for computation")
+        
+        # Start a background thread to monitor GPU memory
+        try:
+            gpu_monitor = threading.Thread(target=monitor_gpu_memory, daemon=True)
+            gpu_monitor.start()
+            print("   🔍 GPU memory monitoring thread started")
+        except Exception as e:
+            print(f"   ⚠️ Could not start GPU monitoring: {e}")
+    else:
+        os.environ["DEVICE"] = "metal"
+        print("   ✅ Using Metal GPU for computation")
+elif nvidia_gpu_available:
+    # If nvidia-smi shows a GPU but TensorFlow doesn't see it, there might be a configuration issue
+    print("   ⚠️ NVIDIA GPU detected with nvidia-smi but not recognized by TensorFlow")
+    print("   🔧 Setting environment variables for CUDA visibility")
+    
+    # Try to force GPU to be visible
+    os.environ["DEVICE"] = "cuda"
+    os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    print("   ✅ Forced CUDA environment variables for computation")
+else:
+    print("   ℹ️ No GPU found, falling back to CPU")
+    os.environ["DEVICE"] = "cpu"
+
+# Try to create a simple operation on GPU if available
+if nvidia_gpu_available or gpus:
+    try:
+        with tf.device("/device:GPU:0"):
+            test_tensor = tf.zeros((1, 1))
+            print(f"   ✅ Successfully created tensor on GPU: {os.environ['DEVICE']}")
+    except Exception as e:
+        print(f"   ⚠️ Could not create tensor on GPU: {e}")
+        print("   ℹ️ Falling back to CPU")
+        os.environ["DEVICE"] = "cpu"
 
 from src.data_processing.load_dataset import load_fused_tensorflow_dataset
 from src.models.model import SpeechEmotionModel
@@ -185,6 +356,7 @@ def load_data_by_type(args):
 
 
 def main():
+    import numpy as np  # Add numpy import inside the function
     parser = argparse.ArgumentParser(description="Train or test a temporal conv-based speech emotion model.")
     parser.add_argument(
         "--mode",
@@ -249,36 +421,46 @@ def main():
         default=8,
         help="Maximum power-of-two dilation size.",
     )
-    parser.add_argument("--kernel_size", type=int, default=3, help="Kernel size for convolution layers.")
-    parser.add_argument("--stack_size", type=int, default=3, help="Number of temporal blocks to stack.")
+    parser.add_argument(
+        "--kernel_size",
+        type=int,
+        default=3,
+        help="Size of convolutional kernel.",
+    )
+    parser.add_argument(
+        "--stack_size",
+        type=int,
+        default=3,
+        help="Number of temporal blocks to stack.",
+    )
     parser.add_argument(
         "--split_fold",
         type=int,
         default=10,
-        help="Number of folds for cross-validation for better stability.",
+        help="Number of folds for k-fold cross-validation.",
     )
-    parser.add_argument("--gpu", type=str, default="0", help="GPU device index to use.")
+    parser.add_argument(
+        "--gpu",
+        type=int,
+        default=0,
+        help="GPU device ID to use (0 for first GPU).",
+    )
     parser.add_argument(
         "--visualize",
         action="store_true",
-        help="Whether to visualize confusion matrix (requires matplotlib)",
-    )
-    parser.add_argument(
-        "--use_lmmd",
-        action="store_true",
-        help="Whether to use LMMD loss for domain adaptation",
+        help="Enable visualization of training metrics.",
     )
     parser.add_argument(
         "--lmmd_weight",
         type=float,
         default=0.5,
-        help="Weight for LMMD loss in domain adaptation",
+        help="Weight for LMMD loss in domain adaptation.",
     )
     parser.add_argument(
         "--target_data",
         type=str,
         default=None,
-        help="Target domain dataset for domain adaptation (if different from --data)",
+        help="Target dataset for domain adaptation (EMODB or RAVDESS).",
     )
 
     args = parser.parse_args()
@@ -353,7 +535,12 @@ def main():
     try:
         with tf.device("/device:GPU:0"):
             tf.zeros((1, 1))
-            print("\n💻 Using Metal GPU for training")
+            if os.environ["DEVICE"] == "cuda":
+                print("\n💻 Using CUDA GPU for training")
+            elif os.environ["DEVICE"] == "metal":
+                print("\n💻 Using Metal GPU for training")
+            else:
+                print("\n💻 Using CPU for training")
     except:
         print("\n💻 Using CPU for training")
 
@@ -371,15 +558,43 @@ def main():
 
     elif args.mode == "test":
         print("🧪 Starting testing...\n")
+        
+        # Initialize model first
+        print("\n🧠 Initializing model...")
+        model = SpeechEmotionModel(input_shape=x_source.shape[1:], class_labels=class_labels, args=args)
+        
+        # Create model architecture explicitly
+        print("\n🔄 Creating model architecture...")
+        model.create_model()
+        
+        # Find latest model weights
         if os.path.isdir(args.test_path):
+            # Check for both .h5 files and TensorFlow checkpoints
             h5_files = [os.path.join(args.test_path, f) for f in os.listdir(args.test_path) if f.endswith(".h5")]
-            if not h5_files:
-                raise FileNotFoundError(f"No .h5 files found in {args.test_path}")
-            args.test_path = max(h5_files, key=os.path.getmtime)
-            print(f"📌 Latest model found: {args.test_path}")
-
-        model.evaluate_test(x_source, y_source, path=args.test_path)
-        print("\n✅ Testing complete!\n")
+            checkpoint_files = [os.path.join(args.test_path, f) for f in os.listdir(args.test_path) if f.endswith(".index")]
+            
+            if not h5_files and not checkpoint_files:
+                raise FileNotFoundError(f"No .h5 or checkpoint files found in {args.test_path}")
+            
+            if h5_files:
+                args.test_path = max(h5_files, key=os.path.getmtime)
+                print(f"📌 Latest H5 model found: {args.test_path}")
+            else:
+                # For checkpoint files, remove the .index extension to get the base path
+                checkpoint_base = max(checkpoint_files, key=os.path.getmtime)[:-6]  # Remove .index
+                args.test_path = checkpoint_base
+                print(f"📌 Latest checkpoint model found: {args.test_path}")
+        
+        # Load weights with expect_partial() to suppress optimizer variable warnings
+        print(f"📋 Loading model weights from: {args.test_path}")
+        try:
+            model.model.load_weights(args.test_path).expect_partial()
+            print("✅ Model weights loaded successfully")
+            model.evaluate_test(x_source, y_source, path=args.test_path)
+            print("\n✅ Testing complete!\n")
+        except Exception as e:
+            print(f"❌ Error loading model weights: {str(e)}")
+            raise
 
     elif args.mode == "test-cross-corpus":
         print("🧪 Starting cross-corpus validation...\n")
@@ -404,6 +619,70 @@ def main():
 
         # Load target dataset for testing
         x_target, y_target = load_data_by_type(argparse.Namespace(**{**vars(args), "data": args.test_data}))
+
+        # Validate datasets
+        print("\n🔍 Validating datasets:")
+        print(f"Source dataset: {x_source.shape} samples, {y_source.shape} labels")
+        print(f"Target dataset: {x_target.shape} samples, {y_target.shape} labels")
+        
+        # Check feature dimensions match
+        if x_source.shape[2] != x_target.shape[2]:
+            raise ValueError(f"Feature dimensions mismatch: source has {x_source.shape[2]} features, target has {x_target.shape[2]} features")
+        
+        # Remap target labels to consecutive integers starting from 0
+        unique_target_labels = np.unique(y_target)
+        print(f"\n🔄 Original target labels found: {unique_target_labels}")
+        target_label_mapping = {label: idx for idx, label in enumerate(sorted(unique_target_labels))}
+        print(f"🔄 Remapping target labels to: {target_label_mapping}")
+        y_target_remapped = np.array([target_label_mapping[label] for label in y_target])
+        
+        # One-hot encode with the correct number of classes
+        num_target_classes = len(target_class_labels)
+        print(f"📊 Using {num_target_classes} classes for target one-hot encoding")
+        y_target = to_categorical(y_target_remapped, num_classes=num_target_classes)
+        print(f"✅ Target labels shape after one-hot encoding: {y_target.shape}")
+        
+        # Ensure source labels are also properly one-hot encoded
+        if len(y_source.shape) == 1:
+            num_source_classes = len(source_class_labels)
+            print(f"\n🔄 Converting source labels to one-hot encoding with {num_source_classes} classes...")
+            y_source = to_categorical(y_source, num_classes=num_source_classes)
+            print(f"✅ Source labels shape after one-hot encoding: {y_source.shape}")
+            
+        if y_source.shape[1] != len(source_class_labels) or y_target.shape[1] != len(target_class_labels):
+            raise ValueError("Label dimensions don't match number of classes")
+
+        # Handle sequence length differences
+        max_seq_len = max(x_source.shape[1], x_target.shape[1])
+        feature_dim = x_source.shape[2]
+        
+        print(f"\n📊 Sequence length adjustment:")
+        print(f"   Source length: {x_source.shape[1]}")
+        print(f"   Target length: {x_target.shape[1]}")
+        print(f"   Using max length: {max_seq_len}")
+        
+        # Pad both source and target data to match sequence length
+        if x_source.shape[1] < max_seq_len:
+            pad_length = max_seq_len - x_source.shape[1]
+            x_source = np.pad(
+                x_source,
+                ((0, 0), (0, pad_length), (0, 0)),
+                mode='constant'
+            )
+            print(f"   Padded source data: {x_source.shape}")
+            
+        if x_target.shape[1] < max_seq_len:
+            pad_length = max_seq_len - x_target.shape[1]
+            x_target = np.pad(
+                x_target,
+                ((0, 0), (0, pad_length), (0, 0)),
+                mode='constant'
+            )
+            print(f"   Padded target data: {x_target.shape}")
+            
+        print(f"\n✅ Final shapes:")
+        print(f"   Source: {x_source.shape}")
+        print(f"   Target: {x_target.shape}")
 
         # Determine emotion mapping key
         mapping_key = f"{args.data}_TO_{args.test_data}"
@@ -517,35 +796,35 @@ def main():
             result_dir=result_dir,
         )
 
-        # Optionally visualize confusion matrix
+        # Optionally visualize confusion matrix and training metrics
         if args.visualize:
             try:
                 import matplotlib.pyplot as plt
                 import seaborn as sns
+                import pandas as pd
+                import numpy as np
 
-                print("\n📊 Generating confusion matrix visualization...")
+                print("\n📊 Generating visualizations...")
+                os.makedirs(model.result_dir, exist_ok=True)
 
-                # Get the number of unique classes in the predicted data
+                # 1. Confusion Matrix Visualization
+                print("   → Creating confusion matrix...")
                 unique_classes = np.unique(np.concatenate([y_mapped, y_pred]))
                 num_unique_classes = len(unique_classes)
 
-                # Determine which labels to use
                 if num_unique_classes != len(target_class_labels):
-                    print(f"⚠️ Using {num_unique_classes} labels for visualization instead of {len(target_class_labels)}")
+                    print(f"   ⚠️ Using {num_unique_classes} labels instead of {len(target_class_labels)}")
                     present_classes = sorted(unique_classes)
-                    display_labels = [(target_class_labels[i] if i < len(target_class_labels) else f"Class {i}") for i in present_classes]
+                    display_labels = [(target_class_labels[i] if i < len(target_class_labels) else f"Class {i}") 
+                                    for i in present_classes]
                 else:
                     display_labels = target_class_labels
 
-                # Convert y_mapped to emotion names for better visualization
                 y_true = y_mapped
-
-                # Calculate confusion matrix
                 cm = confusion_matrix(y_true, y_pred)
                 cm_norm = cm.astype("float") / cm.sum(axis=1)[:, np.newaxis]
 
-                # Create figure
-                plt.figure(figsize=(10, 8))
+                plt.figure(figsize=(12, 8))
                 sns.heatmap(
                     cm_norm,
                     annot=True,
@@ -558,13 +837,83 @@ def main():
                 plt.ylabel("True")
                 plt.title(f"Cross-Corpus Validation: {args.data} → {args.test_data}\nAccuracy: {accuracy:.2f}")
 
-                # Save figure
-                viz_path = os.path.join(model.result_dir, f"{result_filename}_cm.png")
-                plt.savefig(viz_path)
-                print(f"✅ Visualization saved to: {viz_path}")
+                viz_path = os.path.join(model.result_dir, f"{result_filename}_confusion_matrix.png")
+                plt.savefig(viz_path, bbox_inches='tight', dpi=300)
+                plt.close()
 
-            except ImportError:
-                print("⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'")
+                # 2. Training History Visualization (if available)
+                if hasattr(model, 'history') and model.history is not None:
+                    print("   → Creating training history plots...")
+                    
+                    # Convert history to DataFrame for easier manipulation
+                    history_df = pd.DataFrame(model.history.history)
+                    
+                    # Apply rolling smoothing (window of 5 epochs)
+                    smoothing_window = 5
+                    smoothed_metrics = {}
+                    
+                    for metric in history_df.columns:
+                        if len(history_df[metric]) >= smoothing_window:
+                            smoothed_metrics[f"{metric}_smooth"] = history_df[metric].rolling(
+                                window=smoothing_window, center=True
+                            ).mean()
+                        else:
+                            smoothed_metrics[f"{metric}_smooth"] = history_df[metric]
+                    
+                    # Create subplots for different metrics
+                    fig, axes = plt.subplots(2, 1, figsize=(12, 12))
+                    
+                    # Plot accuracy metrics
+                    ax1 = axes[0]
+                    if 'accuracy' in history_df:
+                        ax1.plot(history_df.index, history_df['accuracy'], 
+                                'b-', alpha=0.3, label='Training Accuracy')
+                        ax1.plot(history_df.index, smoothed_metrics['accuracy_smooth'], 
+                                'b-', label='Training Accuracy (Smoothed)')
+                    if 'val_accuracy' in history_df:
+                        ax1.plot(history_df.index, history_df['val_accuracy'], 
+                                'r-', alpha=0.3, label='Validation Accuracy')
+                        ax1.plot(history_df.index, smoothed_metrics['val_accuracy_smooth'], 
+                                'r-', label='Validation Accuracy (Smoothed)')
+                    ax1.set_title('Model Accuracy over Epochs')
+                    ax1.set_xlabel('Epoch')
+                    ax1.set_ylabel('Accuracy')
+                    ax1.legend()
+                    ax1.grid(True)
+                    
+                    # Plot loss metrics
+                    ax2 = axes[1]
+                    if 'loss' in history_df:
+                        ax2.plot(history_df.index, history_df['loss'], 
+                                'b-', alpha=0.3, label='Training Loss')
+                        ax2.plot(history_df.index, smoothed_metrics['loss_smooth'], 
+                                'b-', label='Training Loss (Smoothed)')
+                    if 'val_loss' in history_df:
+                        ax2.plot(history_df.index, history_df['val_loss'], 
+                                'r-', alpha=0.3, label='Validation Loss')
+                        ax2.plot(history_df.index, smoothed_metrics['val_loss_smooth'], 
+                                'r-', label='Validation Loss (Smoothed)')
+                    ax2.set_title('Model Loss over Epochs')
+                    ax2.set_xlabel('Epoch')
+                    ax2.set_ylabel('Loss')
+                    ax2.legend()
+                    ax2.grid(True)
+                    
+                    # Adjust layout and save
+                    plt.tight_layout()
+                    history_path = os.path.join(model.result_dir, f"{result_filename}_training_history.png")
+                    plt.savefig(history_path, bbox_inches='tight', dpi=300)
+                    plt.close()
+                    
+                    print(f"✅ Visualizations saved to: {model.result_dir}")
+                else:
+                    print("   ⚠️ No training history available for visualization")
+
+            except ImportError as e:
+                print(f"⚠️ Visualization requires additional packages: {str(e)}")
+                print("   Install with 'pip install matplotlib seaborn pandas'")
+            except Exception as e:
+                print(f"⚠️ Error during visualization: {str(e)}")
 
         print("\n✅ Cross-corpus validation complete!\n")
 
@@ -723,8 +1072,123 @@ def main():
             except ImportError:
                 print("⚠️ Visualization requires matplotlib and seaborn. Install with 'pip install matplotlib seaborn'")
 
-    else:
-        print(f"⚠️ Invalid mode: {args.mode}")
+        # Domain adaptation visualizations
+        print("\n📊 Generating domain adaptation visualizations...")
+
+        # 1. Source domain confusion matrix
+        plt.figure(figsize=(12, 8))
+        sns.heatmap(
+            cm_source_norm,
+            annot=True,
+            fmt=".2f",
+            cmap="Blues",
+            xticklabels=source_class_labels,
+            yticklabels=source_class_labels,
+        )
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.title(f"Source Domain ({args.data}) Confusion Matrix")
+        source_viz_path = os.path.join(args.result_path, f"lmmd_{args.data}_source_cm.png")
+        plt.savefig(source_viz_path, bbox_inches='tight', dpi=300)
+        plt.close()
+
+        # 2. Target domain confusion matrix
+        plt.figure(figsize=(12, 8))
+        sns.heatmap(
+            cm_target_norm,
+            annot=True,
+            fmt=".2f",
+            cmap="Blues",
+            xticklabels=target_names,
+            yticklabels=target_names,
+        )
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.title(f"Target Domain ({target_dataset}) Confusion Matrix")
+        target_viz_path = os.path.join(args.result_path, f"lmmd_{target_dataset}_target_cm.png")
+        plt.savefig(target_viz_path, bbox_inches='tight', dpi=300)
+        plt.close()
+
+        # 3. Training history with smoothing (if available)
+        if hasattr(ser_model, 'history') and ser_model.history is not None:
+            print("   → Creating domain adaptation training history plots...")
+            
+            # Convert history to DataFrame
+            history_df = pd.DataFrame(ser_model.history.history)
+            
+            # Apply rolling smoothing
+            smoothing_window = 5
+            smoothed_metrics = {}
+            
+            for metric in history_df.columns:
+                if len(history_df[metric]) >= smoothing_window:
+                    smoothed_metrics[f"{metric}_smooth"] = history_df[metric].rolling(
+                        window=smoothing_window, center=True
+                    ).mean()
+                else:
+                    smoothed_metrics[f"{metric}_smooth"] = history_df[metric]
+            
+            # Create subplots for different metrics
+            fig, axes = plt.subplots(2, 1, figsize=(12, 12))
+            
+            # Plot accuracy metrics
+            ax1 = axes[0]
+            metrics_to_plot = [
+                ('accuracy', 'Training Accuracy'),
+                ('val_accuracy', 'Validation Accuracy'),
+                ('target_accuracy', 'Target Domain Accuracy')
+            ]
+            
+            colors = ['blue', 'red', 'green']
+            for (metric, label), color in zip(metrics_to_plot, colors):
+                if metric in history_df:
+                    ax1.plot(history_df.index, history_df[metric], 
+                            color=color, alpha=0.3, label=label)
+                    ax1.plot(history_df.index, smoothed_metrics[f"{metric}_smooth"], 
+                            color=color, label=f"{label} (Smoothed)")
+            
+            ax1.set_title('Model Accuracy over Epochs')
+            ax1.set_xlabel('Epoch')
+            ax1.set_ylabel('Accuracy')
+            ax1.legend()
+            ax1.grid(True)
+            
+            # Plot loss metrics
+            ax2 = axes[1]
+            loss_metrics = [
+                ('loss', 'Training Loss'),
+                ('val_loss', 'Validation Loss'),
+                ('lmmd_loss', 'LMMD Loss')
+            ]
+            
+            for (metric, label), color in zip(loss_metrics, colors):
+                if metric in history_df:
+                    ax2.plot(history_df.index, history_df[metric], 
+                            color=color, alpha=0.3, label=label)
+                    ax2.plot(history_df.index, smoothed_metrics[f"{metric}_smooth"], 
+                            color=color, label=f"{label} (Smoothed)")
+            
+            ax2.set_title('Model Loss over Epochs')
+            ax2.set_xlabel('Epoch')
+            ax2.set_ylabel('Loss')
+            ax2.legend()
+            ax2.grid(True)
+            
+            # Adjust layout and save
+            plt.tight_layout()
+            history_path = os.path.join(args.result_path, f"lmmd_training_history.png")
+            plt.savefig(history_path, bbox_inches='tight', dpi=300)
+            plt.close()
+            
+            print(f"✅ Domain adaptation visualizations saved to: {args.result_path}")
+        else:
+            print("   ⚠️ No training history available for visualization")
+
+    # Final cleanup
+    print("\n🧹 Final memory cleanup...")
+    tf.keras.backend.clear_session()
+    gc.collect()
+    print("✅ Done!")
 
 
 if __name__ == "__main__":

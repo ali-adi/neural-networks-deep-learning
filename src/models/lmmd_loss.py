@@ -233,16 +233,38 @@ class LMMDLoss(tf.keras.losses.Loss):
         self.kernel_num = kernel_num
         self.fix_sigma = fix_sigma
 
-    def call(self, y_true, y_pred):
-        # This is a placeholder - actual implementation requires source/target features and labels
-        # which are provided during model training
-        return tf.keras.losses.categorical_crossentropy(y_true, y_pred)
-
-    def get_lmmd_loss_fn(self):
-        return get_lmmd_loss(
-            self.num_classes,
+    def call(self, source_features, target_features, source_labels, target_pseudo_labels, num_classes):
+        """
+        Compute the LMMD loss between source and target domains.
+        
+        Args:
+            source_features: Features from source domain
+            target_features: Features from target domain
+            source_labels: One-hot encoded labels from source domain
+            target_pseudo_labels: Predicted probabilities for target domain
+            num_classes: Number of classes
+            
+        Returns:
+            LMMD loss value
+        """
+        return lmmd_loss(
+            source_features,
+            target_features,
+            source_labels,
+            target_pseudo_labels,
+            num_classes,
             self.kernel_mul,
             self.kernel_num,
-            self.fix_sigma,
-            self.weight,
+            self.fix_sigma
         )
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "num_classes": self.num_classes,
+            "weight": self.weight,
+            "kernel_mul": self.kernel_mul,
+            "kernel_num": self.kernel_num,
+            "fix_sigma": self.fix_sigma
+        })
+        return config
